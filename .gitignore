@@ -1,2 +1,3 @@
 .python-version
 image_processing/
+__pycache__
