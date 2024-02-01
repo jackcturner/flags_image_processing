@@ -650,11 +650,6 @@ class Extraction():
                 imgconfig['CHECKIMAGE_NAME'] = f'{imgconfig["CATALOG_NAME"][:-4]}.temp_seg.fits'
                 warnings.warn('Empirical uncertainty eatimation requires a segmentation image. Other requested images will not be produced.', stacklevel=2)
         
-        # Ensure check images are saved to the output directory, even if name has not been updated.
-        if imgconfig['CHECKIMAGE_TYPE'] != None:
-            if os.path.dirname(imgconfig['CHECKIMAGE_NAME']) != outdir:
-                imgconfig['CHECKIMAGE_NAME'] = f'{outdir}/{imgconfig["CHECKIMAGE_NAME"]}'
-        
         # Write the output parameters to a text file which can be given to SExtractor.
         parameter_filename = self.write_params(measurement, outdir)
         imgconfig['PARAMETERS_NAME'] = parameter_filename
