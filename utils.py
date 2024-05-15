@@ -586,7 +586,7 @@ def match_gaia_sources(catalogue, bands, gaia_catalogue, tolerance, ra_name = 'A
     
     return
 
-def mask_regions(image, regions, outname = None):
+def regions_to_mask(image, regions, outname = None):
     """Convert a DS9 region file to an image mask.
     
     Arguments
@@ -626,10 +626,93 @@ def mask_regions(image, regions, outname = None):
 
     return
 
+def create_edge_mask(images, off_image = 0, buffer_size = 5, threshold = 0.1, n_pixels = 50, outname = 'combined_edge_mask.fits'):
+    """
+    Use binaray hole filling and sobel filters to identify and mask
+    image edges and merge multiple mask into a single combined mask.
+    
+    Arguments
+    ---------
+    images (str, List[str])
+        The image(s) tfor which to create the edge mask.
+    off_image (float)
+        The value indicating an off detector region.
+    buffer_size (int)
+        The width of buffer around the image array edge within which to 
+        ignore edges. 
+    threshold (float)
+        Threshold for edge identification.
+    n_pixels (int)
+        Number of  pixels to use when dilating the edge mask.
+    outname (str)
+        Filename for the saved edge mask.
+
+    Returns
+    -------
+    combined_mask (numpy.ndarray)
+        2D array where True indicates an edge in one of the 
+        provided images.
+    """
+
+    # Convert string to list if required.
+    if type(images) == str:
+        images = [images]
+
+    masks = []
+    for image in images:
+        print(image)
+        sci , hdr = fits.getdata(image, header=True)
+
+        # Fill any holes that may be identified as edges.
+        data = nd.binary_fill_holes(sci)
+
+        # Identify off-image regions
+        off_image_mask = (data == off_image)
+
+        # Do not create a mask if the edge identified is with this many pixels of the image edge.
+        # Can create spurious masks if not set.
+        buffer_mask = np.zeros_like(data, dtype=bool)
+        buffer_mask[:buffer_size, :] = True  # Top buffer
+        buffer_mask[-buffer_size:, :] = True  # Bottom buffer
+        buffer_mask[:, :buffer_size] = True  # Left buffer
+        buffer_mask[:, -buffer_size:] = True  # Right buffer
+
+        # Detect the edges.
+        edges_x = nd.sobel(data, axis=0)
+        edges_y = nd.sobel(data, axis=1)
+        edges = np.sqrt(edges_x**2 + edges_y**2)
+
+        # Reequire a minimum threshold.
+        edge_mask = edges > threshold
+
+        # Combine off-image mask and dilated edge mask
+        comb_mask = np.logical_and(off_image_mask, edge_mask)
+        comb_mask[buffer_mask] = False  # Exclude buffer zone from masking
+
+        # Dilate the edge mask
+        final_mask = nd.binary_dilation(comb_mask, iterations=n_pixels)  # 50-pixel dilation
+
+        masks.append(final_mask)
+    
+    # Merge masks if required.
+    if len(masks) > 1:
+        print('merging')
+        combined_mask = np.zeros_like(masks[0], dtype=bool)
+        for mask in masks:
+            combined_mask = np.logical_or(combined_mask, mask)
+    else:
+        combined_mask = masks[0]
+    combined_mask = combined_mask.astype(np.uint8)
+
+    hdr = fits.getheader(images[0])
+    fits.writeto(outname, combined_mask, hdr)
+
+    return combined_mask
+
 def flag_mask(catalogue, mask, bands, label = 'MASK', X_name = 'X_IMAGE', Y_name = 'Y_IMAGE'):
     """Flag sources with centres within a masked region.
 
-    WARNING: Assume SExtractor coordinates so X -> Y, Y -> X.
+    WARNING: Assumes SExtractor coordinates so X -> Y, Y -> X.
         Can be overwritten be specifying X_name, Y_name accordingly.
     
     Arguments
