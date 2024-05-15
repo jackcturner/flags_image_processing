@@ -1,0 +1,24 @@
+# Ring-median filtering
+# ---------------------
+RING_CLIP_BOX_SIZE: 100    # Initial background estimate box size. [pix]
+RING_CLIP_FILTER_SIZE: 3    # Initial background estimate filter size. [box]
+
+RING_CLIP_MAX_SIGMA: 5    # Pixels this factor above the background are masked before filtering.
+
+RING_RADIUS_IN: 80    # Inner radius in of the filtering ring. [pix]
+RING_WIDTH: 4    # Width of the filtering ring. [pix]
+
+# Source masking
+# --------------
+TIER_NSIGMA: [1.5, 1.5, 1.5, 1.5]    # Factor above background required for detection at each masking tier.
+TIER_NPIXELS: [16, 12, 4, 1]    # Minimum connected pixels required for detection at each masking tier.
+TIER_KERNEL_SIZE: [24, 16, 8, 4]    # Standard deviation of the smoothing kernel at each masking tier.
+TIER_DILATE_SIZE: [32, 24, 20, 16]    # Radius of source mask dilation at each masking tier. [pix]
+
+# Background Subtraction
+# ----------------------
+BG_BOX_SIZE: 8    # Final background estimate box size. [pix]
+BG_SIGMA: 3    # The upper and lower sigma clipping limit.
+BG_FILTER_SIZE: 5    # Final background estimate filter size. [box]
+BG_EXCLUDE_PERCENTILE: 90    # Exclude boxes from filter if more than this percentage is masked.
+INTERPOLATOR: 'zoom'    # The interpolator to use. (zoom, IDW)

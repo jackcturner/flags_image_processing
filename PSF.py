@@ -1,5 +1,7 @@
-# Adapted from the aperpy code available at https://github.com/astrowhit/aperpy
+# Adapted from the aperpy code available at 
+# https://github.com/astrowhit/aperpy
 
+import copy
 import yaml
 import os
 import subprocess
@@ -7,12 +9,8 @@ import cv2
 
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.scale as mscale
-import matplotlib.transforms as mtransforms
-import matplotlib.ticker as ticker
 
 from astropy.io import fits
-from astropy.wcs import WCS
 from astropy.table import Table, hstack
 from astropy.nddata import block_reduce, Cutout2D
 from astropy.stats import mad_std, sigma_clip
@@ -30,225 +28,126 @@ from skimage.morphology import disk
 
 import warnings
 warnings.resetwarnings()
-warnings.filterwarnings('ignore', category=UserWarning, append=True)
-np.errstate(invalid='ignore')
-
-class SquareRootScale(mscale.ScaleBase):
-    """
-    ScaleBase class for generating square root scale.
-    """
-
-    name = 'squareroot'
-
-    def __init__(self, axis, **kwargs):
-
-        mscale.ScaleBase.__init__(self, axis)
-
-    def set_default_locators_and_formatters(self, axis):
-        axis.set_major_locator(ticker.AutoLocator())
-        axis.set_major_formatter(ticker.ScalarFormatter())
-        axis.set_minor_locator(ticker.NullLocator())
-        axis.set_minor_formatter(ticker.NullFormatter())
-
-    def limit_range_for_scale(self, vmin, vmax, minpos):
-        return  max(0., vmin), vmax
-
-    class SquareRootTransform(mtransforms.Transform):
-        input_dims = 1
-        output_dims = 1
-        is_separable = True
-
-        def transform_non_affine(self, a):
-            return np.array(a)**0.5
-
-        def inverted(self):
-            return SquareRootScale.InvertedSquareRootTransform()
-
-    class InvertedSquareRootTransform(mtransforms.Transform):
-        input_dims = 1
-        output_dims = 1
-        is_separable = True
-
-        def transform(self, a):
-            return np.array(a)**2
-
-        def inverted(self):
-            return SquareRootScale.SquareRootTransform()
-
-    def get_transform(self):
-        return self.SquareRootTransform()
+warnings.filterwarnings('ignore', category = UserWarning, append = True)
+np.errstate(invalid = 'ignore')
 
 class PSF():
-    """Class for generating and storing information associated with an empirical PSF.
-        Also facilitates kernel generation and convolution."""
 
-    def __init__(self, image_filename, band, psf_configfile, parameters = {}):
-        """__init__ method for PSF
-
-        Parameters
-        ----------
-            image_filename (str):
-                Path to image on which to base the PSF.
-            band (str):
-                Filter code corresponding to this PSF (eg. 'F444W').
-            psf_configfile (str):
-                Path to .yml file containing the configuration parameters for 
-                PSF measuring, kernel genration and image convolution.
+    def __init__(self, config_filename):
+        """
+        __init__ method for PSF class.
+        
+        Arguments
+        ---------
+        config_filename (str)
+            Path to .yml configuration file specifying parameters to use
+            at each step
         """
 
-        # Image to measure PSF from.
-        self.image_filename = image_filename
-        self.img, self.hdr = fits.getdata(image_filename, header=True) # Store image and header.
-        self.wcs = WCS(self.hdr) # and WCS information.
-
         # Load the config file.
-        self.psf_configfile = psf_configfile
-        with open(self.psf_configfile, 'r') as file:
+        self.config_filename = config_filename
+        with open(self.config_filename, 'r') as file:
             yml = yaml.safe_load_all(file)
             content = []
             for entry in yml:
                 content.append(entry)
             self.config = content[0]
-
-        # Update the stored configuration file with any overwritten parameters.
-        for (key, value) in parameters.items():
-                if key in self.config:
-                    self.config[key] = value
-                    self.hdr[f'HIERARCH {key}'] = str(value)
-                else:
-                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.', stacklevel=2)
-
-        # The measurement band corresponding to the image.
-        self.band = band.upper()
-
-        # Some issue with pypher and some pixel scale headers.
-        # So add 'PIXSCALE' from config file if not already in keys.
-        if 'PIXSCALE' not in list(self.hdr.keys()):
-            self.hdr['PIXSCALE'] = (self.config["PIXEL_SCALE"], 'Pixel scale given in config file')
-    
-    def powspace(self, start, stop, power=0.5, num = 30, **kwargs):
-        """Generate a square-root spaced array with a specified number of points between two endpoints.
-
-        Parameters
-        ----------
-        start (float):
-            The starting value of the range.
-        stop (float):
-            The ending value of the range.
-        power (float): 
-            Power of distribution, defaults to sqrt.
-        num (int):
-            The number of points to generate in the array. Default is 30.
-
-        Returns
-        -------
-        (numpy.ndarray):
-            A 1-D array of 'num' values spaced equally in square-root space
-            between 'start' and 'stop'.
-        """
-
-        return np.linspace(start**power, stop**power, num=num, **kwargs)**(1/power)
-    
-    def measure_curve_of_growth(self, image, position=None, radii=None, rnorm='auto', nradii=30, rbackg=True, showme=False, verbose=False):
-        """Measure a curve of growth from cumulative circular aperture photometry on a list of radii 
-            centered on the center of mass of a source in a 2D image.
-
-        Parameters
-        ----------
-        image (numpy.ndarray):
-            2D image array.
-        position (astropy.coordinates.SkyCoord/None):
-            Position of the centre of the source. If 'None', it will be measured.
-        radii (numpy.ndarray/None):
-            Array of aperture radii. If None, use 'nradii'.
-        rnorm (float):
-            The radius to use for normalisation. Must be in 'radii'.
-        nradii (int):
-            Number of aperture radii to get from self.powspace. Only used if radii==None.
-        rbackg (bool):
-            Whether to perform backgound subtraction. 
-        showme (bool):
-            Whether to save COG and profile figure. 
-        verbose (bool):
-            Whether to print progress information.
         
+        # Initalise dictionaries for storing science filename, PSFs and
+        # kernels.
+        self.filenames = {}
+        self.PSFs = {}
+        self.Kernels = {}
+    
+    def measure_curve_of_growth(self, image, radii, position=None, norm=True,
+                                show=False):
+        """
+        Measure the Curve Of Growth of an image based on provided radii.
+        
+        Arguments
+        ---------
+        image (numpy.ndarray)
+            The 2D image from which to measure the COG.
+        radii (List[float])
+            The radii in pixels at which to measure the enclosed flux.
+        position (None, list[float]) 
+            The x,y position of the source centre. If None, measure from 
+            moments.
+        norm (bool)
+            Should the COG be normalised by its maximum value?
+        show (bool)
+            Should the measured COG be plotted and displayed?
+
         Returns
         -------
-        radii (numpy.ndarray):
-            The aperture radii used.
-        cog (numpy.ndarray):
-            The measured curve of growth.
-        profile (numpy.ndarray):
-            The measured profile.
+        radii (List[float])
+            The radii at which the enclosed energy was measured.
+        cog (numpy.ndarray)
+            The value of the COG at each radius.
+        profile (numpy.ndarray)
+            The value of the profile at each radius.
         """
 
-        # Default to a sqaure root spaced array.
-        if type(radii) is type(None):
-            radii = self.powspace(0.5,image.shape[1]/2,num=nradii)
-
-        # Calculate the centroid of the source in the image if not given.
-        if type(position) is type(None):
+        # Calculate the centroid of the source.
+        if type(position) == type(None):
             position = centroid_com(image)
 
         # Create an aperture for each radius in radii.
-        apertures = [CircularAperture(position, r=r) for r in radii]
+        apertures = [CircularAperture(position, r = r) for r in radii]
 
-        # Remove background if requested.
-        if rbackg == True:
-            bg_mask = apertures[-1].to_mask().to_image(image.shape) == 0
-            # Background is median of image unmasked by apertures.
-            bg = np.nanmedian(image[bg_mask])
-            if verbose: print('background',bg)
-        else:
-            bg = 0.
+        # Perform aperture photometry for each aperture.
+        phot_table = aperture_photometry(image, apertures)
 
-        # Perform aperture photometry for each aperture
-        phot_table = aperture_photometry(image-bg, apertures)
         # Calculate cumulative aperture fluxes
-        cog = np.array([phot_table['aperture_sum_'+str(i)][0] for i in range(len(radii))])
+        cog = np.array([phot_table['aperture_sum_'+str(i)][0] for i in 
+                        range(len(radii))])
 
-        # Normalise at some radius.
-        if rnorm == 'auto': rnorm = image.shape[1]/2.0
-        if rnorm:
-            rnorm_indx = np.searchsorted(radii, rnorm)
-            cog /= cog[rnorm_indx]
+        # Normalise by the maximum COG value.
+        if norm == True:
+            cog /= max(cog)
 
         # Get the profile.
-        area = np.pi*radii**2 # Area enclosed by each apperture.
-        area_cog = np.insert(np.diff(area),0,area[0]) # Difference between areas.
-        profile = np.insert(np.diff(cog),0,cog[0])/area_cog # Difference between COG elements.
-        profile /= profile.max() # Normalise profile.
+
+        # Area enclosed by each apperture.
+        area = np.pi*radii**2 
+        # Difference between areas.
+        area_cog = np.insert(np.diff(area),0,area[0])
+        # Difference between COG elements.
+        profile = np.insert(np.diff(cog),0,cog[0])/area_cog 
+        # Normalise profile.
+        profile /= profile.max()
 
         # Show the COG and profile if requested.
-        if showme:
+        if show:
+            plt.grid(visible = True, alpha = 0.1)
+            plt.xlabel('Radius')
+            plt.ylabel('Enclosed')
             plt.scatter(radii, cog, s = 25, alpha = 0.7)
             plt.plot(radii,profile/profile.max())
-            plt.xlabel('Radius [pix]')
-            plt.ylabel('Curve of Growth')
 
         # Return the aperture radii, COG and profile.
         return radii, cog, profile
-
+    
     def imshow(self, args, crosshairs=False, **kwargs):
-        """Plot a PSF image.
+        """Display a series of PSF images as a single plot.
 
-        Parameters
-        ----------
-        args (array_like):
-            The images to be plotted.
-        crosshairs (bool):
-            Whether to plot crosshairs on the image.
+        Arguments
+        ---------
+        args (List[numpy.ndarray])
+            The 2D-images to be plotted.
+        crosshairs (bool)
+            Should crosshairs be plotted on the images?
 
         Returns
         -------
-        fig (pyplot.figure):
+        fig (pyplot.figure)
             Pyplot figure object.
-        ax (pyplot.axes):
+        ax (pyplot.axes)
             Pyplot axes object.
         """
 
         # Base image width.
-        width = 20
+        width = 30
 
         # Return if no images given to plot.
         nargs = len(args)
@@ -256,30 +155,46 @@ class PSF():
             return
 
         # Set some plotting keywords if not given.
-        if not (ncol := kwargs.get('ncol')): ncol = int(np.ceil(np.sqrt(nargs)))+1 # Number of cloumns.
-        if not (nsig := kwargs.get('nsig')): nsig = 5 # Number of sigma to use in normalisation.
-        if not (stretch := kwargs.get('stretch')): stretch = LinearStretch() # Stretching to use.
+
+        # Number of cloumns.
+        if not (ncol := kwargs.get('ncol')): 
+            ncol = int(np.ceil(np.sqrt(nargs)))+1
+        # Number of sigma to use in normalisation.
+        if not (nsig := kwargs.get('nsig')): 
+            nsig = 5
+        # Stretching to use.
+        if not (stretch := kwargs.get('stretch')): 
+            stretch = LinearStretch()
 
         # Set up the figure.
-        nrow = int(np.ceil(nargs/ncol)) # Number of rows to plot.
-        panel_width = width/ncol # Width of each panel.
-        fig, ax = plt.subplots(nrows=nrow, ncols=ncol,figsize=(ncol*panel_width,nrow*panel_width))
 
-        if type(ax) is not np.ndarray: ax = np.array(ax)
+        # Number of rows to plot.
+        nrow = int(np.ceil(nargs/ncol))
+        # Width of each panel.
+        panel_width = width/ncol 
+        fig, ax = plt.subplots(nrows = nrow, ncols = ncol, 
+                               figsize = (ncol*panel_width, nrow*panel_width))
+
+        # Ensure compatibility with single images.
+        if type(ax) is not np.ndarray: 
+            ax = np.array(ax)
+        
         usedaxes = []
         for arg, axi in zip(args, ax.flat):
             usedaxes.append(axi)
             # Calculate MAD and use to normalise.
             sig = mad_std(arg[(arg != 0) & np.isfinite(arg)])
-            if sig == 0: sig=1
-            norm = ImageNormalize(np.float32(arg), vmin=-nsig*sig, vmax=nsig*sig, stretch=stretch)
+
+            norm = ImageNormalize(np.float32(arg), vmin = -nsig * sig,
+                                  vmax = nsig*sig, stretch = stretch)
 
             # Plot the image.
-            axi.imshow(arg, norm=norm, origin='lower', interpolation='nearest')
+            axi.imshow(arg, norm = norm, origin = 'lower',
+                       interpolation = 'nearest')
             axi.set_axis_off()
             # Add crosshairs if requested.
             if crosshairs:
-                axi.plot(50,50, color='red', marker='+', ms=10, mew=1)
+                axi.plot(50,50, color = 'red', marker = '+', ms = 10, mew = 1)
 
         # Remove any unused axes.
         for axi in ax.flat:
@@ -292,244 +207,295 @@ class PSF():
 
         return fig, ax
     
-    def get_acceptable_cutouts(self, peaks):
-        """Update the list of acceptable peaks.
-
-        Parameters
-        ----------
-        peaks (astropy.table.Table):
-            Table of peaks information produced by self.find_stars.
+    def find_stars(self, sci, err, config=None, save_figs=True,
+                   science_filename='science_image', outdir = './'):
         """
+        Identify stars in an image using peak finding and criteria on the
+        quality of COG and centre shift.
 
-        # The RA, DEC and ID of each object.
-        ra_stars = peaks['ra']
-        dec_stars = peaks['dec']
-        id_stars = peaks['id']
-
-        # Convert these to pixel values based on WCS values.
-        x_stars,y_stars = self.wcs.all_world2pix(ra_stars, dec_stars, 0)
-
-        # The centre of the square cutout.
-        self.cutout_centre = self.config["PSF_SIZE"]//2
-
-        # Create a table containing star information.
-        self.star_cat = Table([id_stars,x_stars,y_stars,ra_stars,dec_stars],names=['id','x','y','ra','dec'])
-
-        # Take cutouts from base image for each object using pixel position calculated above.
-        data = np.array([Cutout2D(self.img, (x_stars[i],y_stars[i]), (self.config["PSF_SIZE"], self.config["PSF_SIZE"]),mode='partial').data for i in np.arange(len(ra_stars))])
-        
-        # Mask out infinite values and zeros.
-        self.psf_data = np.ma.array(data,mask = ~np.isfinite(data) | (data == 0) )
-        self.psf_data_orig = self.psf_data.copy() # Keep a copy for later.
-
-        # Reset the selection array.
-        self.ok = np.ones(len(self.star_cat))
-
-        return
-
-    def find_stars(self):
-        """Find stars in the image used to initalise the PSF object.
+        Arguments
+        ---------
+        sci (numpy.ndarray)
+            Science image as a 2D array.
+        err (numpy.ndarray)
+            Error map as a 2D array. Must be the same shape as sci.
+        config (None, dict)
+            The config dictionary containing parameter choices for each
+            stage.
+            If None, use the class attribute config.
+        save_figs (bool)
+            Should diagnostic figures be saved?
+        science_filename (str)
+            The filename of the science image. Just used for figure
+            names.
+        outdir (str)
+            The directory in which to save outputs.
 
         Returns
         -------
-        peaks[ok] (pyplot.figure):
-            Information associated with each of the acceptable measured peaks.
-        stars[ok] (list):
-            Contains all the measured COGs for the acceptable peaks.
+        peaks[accept] (stropy.table.table.QTable)
+            Information associated with each of the acceptable measured
+            peaks.
+        cutouts[accept] (numpy.ndarray):
+            3D-array containing the cutouts of the acceptable peaks.
         """
 
-        print(f'Identifying bright sources in {self.image_filename}...')
+        if type(config) == type(None):
+            config = self.config
 
-        # Get image and corresponding header.
-        img, hdr = fits.getdata(self.image_filename, header=True)
-        wcs = WCS(hdr)
+        print((f' Finding peaks {config["NSIG_THRESHOLD"]}x ' 
+               f'above the background...'))
 
-        # Calaculate MAD of image.
-        imgb = block_reduce(img, self.config["BLOCK_SIZE"], func=np.sum)
-        sig = mad_std(imgb[imgb>0], ignore_nan=True)/self.config["BLOCK_SIZE"]
-
-        print(f' Finding peaks {self.config["NSIG_THRESHOLD"]}x above the MAD')
-        # Find at maximum 'npeaks' above the threshold.
-        peaks = find_peaks(img, threshold=self.config["NSIG_THRESHOLD"]*sig, npeaks=self.config["N_PEAKS"])
+        # Identify peaks above the threshold and generate a catalogue.
+        peaks = find_peaks(sci, threshold = config["NSIG_THRESHOLD"]*err,
+                           npeaks = config["N_PEAKS"])
+        
+        # Add and update some columns.
         peaks.rename_column('x_peak','x')
         peaks.rename_column('y_peak','y')
 
-        # Convert pixel locations to world.
-        ra,dec = wcs.all_pix2world(peaks['x'], peaks['y'], 0)
-        peaks['ra'] = ra
-        peaks['dec'] = dec
+        # Will calculate offset from cutout centre
         peaks['x0'] = 0.0
         peaks['y0'] = 0.0
-        peaks['minv'] = 0.0
+        peaks['minv'] = 0.0 # and the minimum pixel value.
 
-        # Add columns for the COG and profile within each radius.
-        for ir in np.arange(len(self.config["RADII"])): peaks['r'+str(ir)] = 0.
-        for ir in np.arange(len(self.config["RADII"])): peaks['p'+str(ir)] = 0.
+        # The COG and profile within each radius.
+        for ir in np.arange(len(config["RADII"])): peaks['r'+str(ir)] = 0.
+        for ir in np.arange(len(config["RADII"])): peaks['p'+str(ir)] = 0.
 
-        print(f' Measuring properites of each object')
-        stars = []
-        # Iterate over the measured peaks.
-        for ip,p in enumerate(peaks):
+        print(f' Measuring properites of each object...')
+        
+        # For each peak.
+        cutouts = []
+        for index, peak in enumerate(peaks):
 
-            # Create cutout.
-            co = Cutout2D(img, (p['x'], p['y']), self.config["STAR_SIZE"], mode='partial')
+            # Create cutout around the measured position.
+            co = Cutout2D(sci, (peak['x'], peak['y']), config["STAR_SIZE"],
+                          mode = 'partial').data
 
-            position = centroid_com(co.data) # Find centre of mass of the image.
+            # Measure offset from cutout centre.
+            position = centroid_com(co)
+            peaks['x0'][index] = position[0] - config["STAR_SIZE"]//2
+            peaks['y0'][index] = position[1] - config["STAR_SIZE"]//2
 
-            peaks['x0'][ip] = position[0] - self.config["STAR_SIZE"]//2 # Used for shift.
-            peaks['y0'][ip] = position[1] - self.config["STAR_SIZE"]//2
+            # and the minimum pixel value.
+            peaks['minv'][index] = np.nanmin(co)
 
-            peaks['minv'][ip] = np.nanmin(co.data) # Image minimum value.
+            # Measure the the COG and profile and add to catalogue.
+            radii, cog, profile = self.measure_curve_of_growth(
+                co, radii = np.array(config["RADII"]), position = position,
+                norm = False)
+            
+            for ir in np.arange(len(config["RADII"])): 
+                peaks['r'+str(ir)][index] = cog[ir]
+            for ir in np.arange(len(config["RADII"])): 
+                peaks['p'+str(ir)][index] = profile[ir]
 
-            # Measure the the COG and profile.
-            _ , cog, profile = self.measure_curve_of_growth(co.data, radii=np.array(self.config["RADII"]), position=position, rnorm=None, rbackg=False)
-            for ir in np.arange(len(self.config["RADII"])): peaks['r'+str(ir)][ip] = cog[ir]
-            for ir in np.arange(len(self.config["RADII"])): peaks['p'+str(ir)][ip] = profile[ir]
+            cutouts.append(co)
 
-            # Store radii, COG and profile as part of cutout and add to stars.
-            co.radii = np.array(self.config["RADII"])
-            co.cog = cog
-            co.profile = profile
-            stars.append(co)
+        # Array containing all candidate cutouts and COGs.
+        cutouts = np.array(cutouts)
 
-        # Array containing all measured stars.
-        stars = np.array(stars)
+        # Magnitude based on flux at maximum aperture radius.
+        peaks['mag'] = (config["MAG_ZP"]
+                        -2.5 * np.log10(peaks[f'r{len(config["RADII"])-1}']))
 
-        # Magnitude of star based on maximum COG at maximum radius.
-        peaks['mag'] = self.config["MAG_ZP"]-2.5*np.log10(peaks['r4'])
+        # Now select only robust star candidates.
+
+        # Magnitude within desired range.
+        accept_mag =  ((peaks['mag'] < config["MAG_MIN"])
+                       & (peaks['mag'] > config["MAG_MAX"]))
+        # Minimum value above threshold.
+        accept_min = (peaks['minv'] > config["THRESHOLD_MIN"])
+        # COG is well defined.
+        accept_phot = ((np.isfinite(peaks[f'r{len(config["RADII"])-1}']))
+                       & (np.isfinite(peaks['r0'])))
+        # Offset from cutout centre is acceptable.
+        accept_shift = ((
+            np.sqrt(peaks['x0']**2 + peaks['y0']**2) < config["SHIFT_LIM"])
+            & (np.abs(peaks['x0']) < np.sqrt(config["SHIFT_LIM"]))
+            & (np.abs(peaks['y0']) < np.sqrt(config["SHIFT_LIM"])))
 
         # Ratio of COG at maxmium and middle value.
-        r = peaks['r4']/peaks['r2']
-        shift_lim_root = np.sqrt(self.config["SHIFT_LIM"])
+        ratio = (peaks[f'r{len(config["RADII"])-1}']
+                 / peaks[f'r{len(config["RADII"]) // 2}'])
 
-        # Check conditions:
-        ok_mag =  (peaks['mag'] < self.config["MAG_MIN"]) & (peaks['mag'] > self.config["MAG_MAX"]) # Above magnitude limit?
-        ok_min =  peaks['minv'] > self.config["THRESHOLD_MIN"] # Minimum value above threshold?
-        ok_phot = np.isfinite(peaks['r'+str(len(self.config["RADII"])-1)]) &  np.isfinite(peaks['r2']) & np.isfinite(peaks['p1']) # COG well defined?
-        ok_shift = (np.sqrt(peaks['x0']**2 + peaks['y0']**2) < self.config["SHIFT_LIM"]) & \
-                (np.abs(peaks['x0']) < shift_lim_root) & (np.abs(peaks['y0']) < shift_lim_root) # Within acceptable offset?
+        # Bin these values and find the most common radius.
+        bins = np.arange(config["RANGE"][0], config["RANGE"][1],
+                         config["WIDTH"])
+        hist = np.histogram(ratio[(accept_mag)], bins = bins)
 
-        # Ratio of COG at maximum and middle value.
-        fig = plt.figure()
-        h = plt.hist(r[(r>1.2) & ok_mag], bins=np.arange(self.config["RANGE"][0], self.config["RANGE"][1], self.config["THRESHOLD_MODE"][1]/2.),range=self.config["RANGE"])
-        fig.clear()
+        i_mode = np.argmax(hist[0])
+        ratio_mode = (hist[1][i_mode] + hist[1][i_mode+1])/2
 
-        # Modal bin count and value.
-        ih = np.argmax(h[0])
-        rmode = h[1][ih]
-        ok_mode =  ((r/rmode-1) > self.config["THRESHOLD_MODE"][0]) & ((r/rmode-1) < self.config["THRESHOLD_MODE"][1]) # Close enough to the mode?
-
-        # Full selection criteria.
-        ok = ok_phot & ok_mode & ok_min & ok_shift & ok_mag
+        # Must be within an acceptable range.
+        accept_mode = ((ratio/ratio_mode > config["THRESHOLD_MODE"][0])
+                       & (ratio/ratio_mode < config["THRESHOLD_MODE"][1]))
             
-        # Fit linear relation with sigma clipping.
-        # x = magnitude at maximum radius, y = ratio of COG at middle radius to maximum radius, 
-        print(' Fitting and removing outliers')
-        try:
-            fitter = FittingWithOutlierRemoval(LinearLSQFitter(), sigma_clip, sigma = self.config["SIGMA_FIT"], niter=2)
-            lfit, outlier = fitter(Linear1D(),x=self.config["MAG_ZP"]-2.5*np.log10(peaks['r4'][ok]),y=(peaks['r4']/peaks['r2'])[ok])
-            ioutlier = np.where(ok)[0][outlier]
-            ok[ioutlier] = False
-        except:
-            print('  linear fit failed')
-            ioutlier = 0
-            lfit = None
+        # Full selection array.
+        accept = (accept_mag & accept_min & accept_phot & accept_shift
+                  & accept_mode)
 
+        # Now fit linear relation to ratio vs mag and remove outliers.
+        print(' Fitting and removing outliers...')
+
+        # Set up the fitter object.
+        fitter = FittingWithOutlierRemoval(
+            LinearLSQFitter(), sigma_clip, sigma = config["SIGMA_FIT"],
+            niter = config['ITERATIONS_FIT'])
+        # Do the fit.
+        lfit, outlier = fitter(Linear1D(), x = peaks['mag'][accept],
+                               y = ratio[accept])
+        # Flag outliers.
+        i_outlier = np.where(accept)[0][outlier]
+        accept[i_outlier] = False
+
+        # Set new ids for the accepted objects.
         peaks['id'] = 1
-        peaks['id'][ok] = np.arange(1,len(peaks[ok])+1)
+        peaks['id'][accept] = np.arange(1, len(peaks[accept])+1)
+
+        print(f' Selected {sum(accept)} candidate stars.')
 
         # Produce diagnostic figures.
-        suffix = '.fits' + self.image_filename.split('.fits')[-1]
-        if self.save_figs == True:
+        if save_figs == True:
 
             # Construct the main diagnostic plot.
-            plt.figure(figsize=(14,8))
+            plt.figure(figsize = (14,8))
             plt.subplot(231)
-            mags = peaks['mag']
-            mlim_plot = np.nanpercentile(mags,[5,95]) + np.array([-2,1])
-            plt.scatter(mags,r, alpha = 0.3, color = 'grey', s = 2, label = 'all')
-            plt.scatter(mags[~ok_shift],r[~ok_shift],label='bad shift',c='C1', alpha = 0.8, s = 6)
-            plt.scatter(mags[ok],r[ok],label='ok',c='C2', alpha = 0.8, s = 6)
-            plt.scatter(mags[ioutlier],r[ioutlier],label='outlier',c='darkred', alpha = 0.8, s = 6)
-            if lfit: plt.plot(np.arange(14,30), lfit(np.arange(14,30)),'--',c='k',alpha=0.3,label='slope = {:.3f}'.format(lfit.slope.value))
-            plt.legend()
-            plt.ylim(0,14)
-            plt.xlim(mlim_plot[0],mlim_plot[1])
-            plt.xlabel('$\\mathrm{m}_{A4}$')
-            plt.ylabel('A2/A4')
 
+            # Set the ratio and magnitude limits.
+            mags = peaks['mag']
+            mlim_plot = np.nanpercentile(mags, [5, 95]) + np.array([-2, 1])
+            plt.ylim(min(ratio) - 1, max(ratio) + 1)
+            plt.xlim(mlim_plot[0], mlim_plot[1])
+
+            plt.xlabel(f'm$_A{{{len(config["RADII"]) - 1}}}$')
+            plt.ylabel(f'A{len(config["RADII"]) // 2}/'
+                       f'A{len(config["RADII"]) - 1}')
+            plt.grid(visible=True, alpha = 0.1)
+
+            # All sources.
+            plt.scatter(mags, ratio, alpha = 0.3, color = 'grey', s = 2,
+                        label = 'All peaks')
+            # Removed due to bad shift.
+            plt.scatter(mags[~accept_shift], ratio[~accept_shift],
+                        label = 'Bad shift', c = 'C1', alpha = 0.8, s = 6)
+            # Removed by linear fit.
+            plt.scatter(mags[i_outlier], ratio[i_outlier], label = 'Outlier',
+                        c = 'darkred', alpha = 0.8, s = 6)
+            # Accepted
+            plt.scatter(mags[accept], ratio[accept], label = 'Accepted',
+                        c = 'C2', alpha = 0.8, s = 6)
+            # The linear fit.
+            plt.plot(np.arange(14,30), lfit(np.arange(14,30)), '--',
+                     c = 'k', alpha = 0.3,
+                     label = 'Slope = {:.3f}'.format(lfit.slope.value))
+
+            plt.legend()
+
+            # The same plot, but zoomed in to the fit region.
             plt.subplot(232)
-            ratio_median = np.nanmedian(r[ok])
-            plt.scatter(mags,r, alpha = 0.3, color = 'grey', s = 3)
-            plt.scatter(mags[~ok_shift],r[~ok_shift],s = 10, alpha = 0.8,label='bad shift',c='C1')
-            plt.scatter(mags[ok],r[ok],s = 10, alpha = 0.8,label='ok',c='C2')
-            plt.scatter(mags[ioutlier],r[ioutlier],s = 10, alpha = 0.8,label='outlier',c='darkred')
-            if lfit: plt.plot(np.arange(15,30), lfit(np.arange(15,30)),'--',c='k',alpha=0.3,label='slope = {:.3f}'.format(lfit.slope.value))
+            ratio_median = np.nanmedian(ratio[accept])
+
             plt.ylim(ratio_median-1,ratio_median+1)
             plt.xlim(mlim_plot[0],mlim_plot[1])
-            plt.xlabel('$\\mathrm{m}_{A4}$')
-            plt.ylabel('A2/A4')
 
+            plt.xlabel(f'm$_A{{{len(config["RADII"])-1}}}$')
+            plt.ylabel((f'A{len(config["RADII"])//2}/'
+                        f'A{len(config["RADII"])-1}'))
+            plt.grid(visible=True, alpha = 0.1)
+
+            # All sources.
+            plt.scatter(mags, ratio, alpha = 0.3, color = 'grey', s = 2,
+                        label = 'All peaks')
+            # Removed due to bad shift.
+            plt.scatter(mags[~accept_shift], ratio[~accept_shift],
+                        label = 'Bad shift', c = 'C1', alpha = 0.8, s = 6)
+            # Removed by linear fit.
+            plt.scatter(mags[i_outlier], ratio[i_outlier], label = 'Outlier',
+                        c = 'darkred', alpha = 0.8, s = 6)
+            # Accepted
+            plt.scatter(mags[accept], ratio[accept], label = 'Accepted',
+                        c = 'C2', alpha = 0.8, s = 6)
+            # The linear fit.
+            plt.plot(np.arange(14,30), lfit(np.arange(14,30)), '--',
+                     c = 'k', alpha = 0.3,
+                     label='Slope = {:.3f}'.format(lfit.slope.value))
+
+            # The histogram showing aperture ratios.
             plt.subplot(233)
-            _ = plt.hist(r[(r>1.2) & ok_mag],bins=np.arange(self.config["RANGE"][0], self.config["RANGE"][1], self.config["THRESHOLD_MODE"][1]/2.),range=self.config["RANGE"], alpha = 0.7, color = 'grey')
-            _ = plt.hist(r[ok],bins=np.arange(self.config["RANGE"][0], self.config["RANGE"][1], self.config["THRESHOLD_MODE"][1]/2.),range=self.config["RANGE"], color='C2', alpha = 1)
-            plt.xlabel('A2/A4')
+
+            # Define the bin edges.
+            bins = np.arange(config["RANGE"][0], config["RANGE"][1],
+                             config["WIDTH"])
+            # For all peaks.
+            plt.hist(ratio, bins = bins, alpha = 0.7, color = 'grey')
+            # And those that were accepted.
+            plt.hist(ratio[accept], bins = bins, color = 'C2', alpha = 1)
+            plt.xlabel((f'A{len(config["RADII"]) // 2}/'
+                        f'A{len(config["RADII"])-1}'))
             plt.ylabel('N')
 
+            # Ratio of peak value measured in largest aperture to Photutils total.
             plt.subplot(234)
-            plt.scatter(self.config["MAG_ZP"]-2.5*np.log10(peaks['r3'][ok]),(peaks['peak_value']/peaks['r3'])[ok], color = 'C2', s = 10, alpha = 0.8)
-            plt.scatter(self.config["MAG_ZP"]-2.5*np.log10(peaks['r3'])[ioutlier],(peaks['peak_value'] /peaks['r3'])[ioutlier],c='darkred', s = 10, alpha = 0.8)
+            plt.grid(visible=True, alpha = 0.1)
+            # For accepted sources and outliers.
+            plt.scatter(config["MAG_ZP"] - 2.5*np.log10(peaks[f'r{len(config["RADII"])-1}'][accept]),(peaks['peak_value']/peaks[f'r{len(config["RADII"])-1}'])[accept], color = 'C2', s = 10, alpha = 0.8)
+            plt.scatter(config["MAG_ZP"]-2.5*np.log10(peaks[f'r{len(config["RADII"])-1}'])[i_outlier],(peaks['peak_value'] /peaks[f'r{len(config["RADII"])-1}'])[i_outlier],c='darkred', s = 10, alpha = 0.8)
             plt.ylim(0,1)
-            plt.xlabel('$\\mathrm{m}_{A3}$')
-            plt.ylabel('peak/A3')
+            plt.xlabel(f'm$_A{{{len(config["RADII"])-1}}}$')
+            plt.ylabel(f'Peak/A{len(config["RADII"])-1}')
 
-
+            # The offset of each source from the cutout centre.
             plt.subplot(235)
-            plt.scatter(peaks['x0'][ok],peaks['y0'][ok],c='C2', alpha = 0.8, s=10)
-            plt.scatter(peaks['x0'][ioutlier],peaks['y0'][ioutlier],c='darkred', alpha = 0.8, s =10)
-            plt.xlim(-2,2)
-            plt.ylim(-2,2)
+            plt.grid(visible=True, alpha = 0.1)
+            # Accepted sources and outliers.
+            plt.scatter(peaks['x0'][accept],peaks['y0'][accept],c='C2', alpha = 0.8, s=10)
+            plt.scatter(peaks['x0'][i_outlier],peaks['y0'][i_outlier],c='darkred', alpha = 0.8, s =10)
+            plt.xlim(-config["SHIFT_LIM"],config["SHIFT_LIM"])
+            plt.ylim(-config["SHIFT_LIM"],config["SHIFT_LIM"])
             plt.xlabel('X-offset [pix]')
             plt.ylabel('Y-offset [pix]')
 
-
+            # The position of the sources in the image.
             plt.subplot(236)
-            plt.scatter(peaks['x'][ok],peaks['y'][ok],c='C2', alpha = 0.8, s=10)
-            plt.scatter(peaks['x'][ioutlier],peaks['y'][ioutlier],c='darkred', alpha = 0.8, s=10)
+            # Accepted sources and outliers.
+            plt.scatter(peaks['x'][accept],peaks['y'][accept],c='C2', alpha = 0.8, s=10)
+            plt.scatter(peaks['x'][i_outlier],peaks['y'][i_outlier],c='darkred', alpha = 0.8, s=10)
             plt.axis('scaled')
             plt.tight_layout()
-            plt.savefig('_'.join([self.outname, 'diagnostic.pdf']))
             plt.xlabel('X [pix]')
             plt.ylabel('Y [pix]')
+            plt.savefig(f'{outdir}/{os.path.basename(science_filename.replace(".fits", "_diagnostic.pdf"))}')
+            plt.close()
 
             # Show all the PSFs that will be used in stacking.
-            dd = [st.data for st in stars[ok]]
-            title = ['{}: {:.1f} AB, ({:.1f}, {:.1f})'.format(ii, mm,xx,yy) for ii,mm,xx,yy in zip(peaks['id'][ok],mags[ok],peaks['x0'][ok],peaks['y0'][ok])]
-            self.imshow(dd,nsig=30,title=title)
+            title = ['{}: {:.1f} AB, ({:.1f}, {:.1f})'.format(ii, mm,xx,yy) for ii,mm,xx,yy in zip(peaks['id'][accept],mags[accept],peaks['x0'][accept],peaks['y0'][accept])]
+            self.imshow(cutouts[accept],nsig=30,title=title)
             plt.tight_layout()
-            plt.savefig('_'.join([self.outname, 'stacked_stamps.pdf']))
-        
-        # Write the acceptable peaks to a catalogue.
-        peaks[ok].write('_'.join([self.outname, 'star_cat.fits']),overwrite=True)
-        return peaks[ok], stars[ok]
+            plt.savefig(f'{outdir}/{os.path.basename(science_filename.replace(".fits", "_star_stamps.pdf"))}')
+            plt.close()
+
+        return peaks[accept], cutouts[accept]
     
     def imshift(self, img, ddx, ddy, interpolation=cv2.INTER_CUBIC):
-        """Recentre an image using an affine transformation.
+        """
+        Recentre an image using an affine transformation.
 
-        Parameters
-        ----------
+        Arguments
+        ---------
         img (numpy.ndarray):
             2D image array to be recentred.
         ddx (float):
             Shift in the x direction.
-        ddy (numpy.ndarray/None):
+        ddy (float):
             Shift in the y direction.
         interpolation (cv2 interpolator):
-            Interpolation approach to use.
+            Interpolation approach.
         
         Returns
         -------
-        (numpy.ndarray):
+        recentred (numpy.ndarray):
             The recentred image.
         """
 
@@ -538,918 +504,701 @@ class PSF():
 
         # Output cutout size.
         wxh = img.shape[::-1]
-        return cv2.warpAffine(img, M, wxh, flags=interpolation)
-    
-    def centre(self,window,interpolation=cv2.INTER_CUBIC):
-        """Centre the stars measured from the image onto the PSF and measure contamination.
 
-        Parameters
-        ----------
-        window (numpy.ndarray):
-            Length of square window side to use for cutout.
+        recentred = cv2.warpAffine(img, M, wxh, flags=interpolation)
+
+        return recentred
+    
+    def centre(self, star_catalogue, cutouts, config = None, interpolation=cv2.INTER_CUBIC):
+        """
+        Recentre cutouts and measure contamination.
+
+        Arguments
+        ---------
+        star_catalogue (astropy.table.table.QTable)
+            Catalogue containing candidate star information.
+        cutouts (numpy.ndarray)
+            3D-array contaning star candidate cutouts.
+        config (None, dict)
+            The config dictionary containing parameter choices for each stage.
+            If None, use the class attribute config.
         interpolation (cv2 interpolator):
-            The type of interpolation to use.
-        ddy (numpy.ndarray/None):
-            Shift in the y direction.
-        interpolation (cv2 interpolator):
-            Interpolation approach to use.
+            Interpolation approach.
+
+        Returns
+        -------
+        star_catalogue (astropy.table.table.QTable)
+            Star catalogue updated with recentering information.
+        cutouts (numpy.ndarray)
+            The recentred star cutouts.
         """
 
+        if type(config) == type(None):
+            config = self.config
+
         # Get the window width and cutout centre.
-        cw = window//2
-        c0 = self.cutout_centre
+        window = config['WINDOW']
+        cw = window // 2
+        c0 = config["PSF_SIZE"] // 2
 
         pos = []
         # Iterate over the different point sources.
-        for i in np.arange(len(self.psf_data)):
-            p = self.psf_data[i,:,:]
+        for i in np.arange(len(cutouts)):
 
-            # Measure the COM of the source.
-            st = Cutout2D(p,(c0,c0),window,mode='partial',fill_value=0).data
-            st[~np.isfinite(st)] = 0
-            x0, y0 = centroid_com(st)
+            cutout = cutouts[i,:,:]
+
+            # Measure the COM of the source within the window.
+            co_window = Cutout2D(cutout, (c0,c0), window, mode='partial', fill_value=0).data
+            co_window[~np.isfinite(co_window)] = 0
+            x0, y0 = centroid_com(co_window)
 
             # Recentre the cutout.
-            p = self.imshift(p, (cw-x0), (cw-y0),interpolation=interpolation)
+            cutout = self.imshift(cutout, (cw-x0), (cw-y0), interpolation=interpolation)
 
             # Now measure COM on recentered cutout.
-            # First in a small window
-            st = Cutout2D(p,(c0,c0),window,mode='partial',fill_value=0).data
-            x1,y1 = centroid_com(st)
+            co_window = Cutout2D(cutout, (c0,c0), window, mode='partial', fill_value=0).data
 
-            # Measure moment shift in positive definite in case there are strong ying yang residuals
-            x2,y2 = centroid_com(np.maximum(p,0))
+            # Using small window.
+            x1,y1 = centroid_com(co_window)
 
-            # Mask infinite or zero values.
-            p = np.ma.array(p, mask = ~np.isfinite(p) | (p==0))
+            # and positive definite in case there are strong ying yang residuals.
+            x2,y2 = centroid_com(np.maximum(cutout,0))
 
-            # Save this recentred cutout.
-            self.psf_data[i,:,:] = p
-
-            # Difference in shift between central window and half of stamp is measure of contamination
-            # from bright off axis sources.
+            # Record difference in shift between these two cases
             dsh = np.sqrt(((c0-x2)-(cw-x1))**2 + ((c0-y2)-(cw-y1))**2)
+            # and the old and new positions.
             pos.append([cw-x0,cw-y0,cw-x1,cw-y1,dsh])
 
+            # Mask infinite or zero values.
+            cutout = np.ma.array(cutout, mask = ~np.isfinite(cutout) | (cutout==0))
+
+            # Store the shifted cutout in place of the old one.
+            cutouts[i,:,:] = cutout
+
         # Add these measurements to the star catalogue.
-        self.star_cat = hstack([self.star_cat,Table(np.array(pos),names=['x0','y0','x1','y1','dshift'])])
+        star_catalogue = hstack([star_catalogue, Table(np.array(pos),names=['x0','y0','x1','y1','dshift'])])
     
-        return
-
-    def phot(self, radius=8):
-        """Measure flux within a circular aperture for all objects in self.psf_data.
-
-        Parameters
-        ----------
-        radius (int):
-            Radius of the circular aperture used for photometry.
-
-        Returns
-        --------
-        phot (list):
-            List containing the measured photometry for each source.
-        """
-
-        caper = CircularAperture((self.cutout_centre,self.cutout_centre), r=radius)
-        phot = [aperture_photometry(st, caper)['aperture_sum'][0] for st in self.psf_data]
-        return phot
+        return star_catalogue, cutouts
     
-    def stamp_rms_snr(self, img, block_size=3, rotate=True):
-        """Measure the MAD and corresponding SNR within an image.
+    def measure(self, star_catalogue, cutouts, config = None):
+        """
+        Measure the photometric properties of stellar sources.
 
-        Parameters
-        ----------
-        img (numpy.ndarray):
-            The image for which to measure the SNR.
-        block_size (int):
+        Arguments
+        ---------
+        star_catalogue (astropy.table.table.QTable)
+            Catalogue containing candidate star information.
+        cutouts (numpy.ndarray)
+            3D-array contaning star candidate cutouts.
+        config (None, dict)
+            The config dictionary containing parameter choices for each stage.
+            If None, use the class attribute config.
 
-
-        Returns
-        --------
-        rms (float):
-            The measured MAD.
-        snr (float):
-            The calculated SNR.
+        Return
+        ------
+        star_catalogue (astropy.table.table.QTable)
+            Star catalogue updated with photometry information.
+        cutouts (numpy.ndarray)
+            Star cutouts with saturated regions masked.
         """
 
-        # Flip the image if required.
-        if rotate:
-            p180 = np.flip(img,axis=(0,1))
-            dp = img-p180
-        else:
-            dp = img.copy()
+        print(' Measuring photometric properties...')
 
-        # Create a buffer around the edge of the image.
-        s = dp.shape[1]
-        buf = 6
-        dp[s//buf:(buf-1)*s//buf,s//buf:(buf-1)*s//buf] = np.nan
-
-        # Calculate the MAD.
-        rms = mad_std(dp,ignore_nan=True)/block_size * np.sqrt(img.size)
-        if rotate: rms /= np.sqrt(2)
-
-        # Calculate the corresponding SNR.
-        snr = img.sum()/rms
-        return rms, snr
-
-    def grow(self, mask, structure=disk(2), **kwargs):
-        """Grow a mask.
-
-        Parameters
-        ----------
-        mask (numpy.ndarray):
-            The mask to grow.
-        structure (array_like):
-            Structuring element used for dilation.
-        **kwargs:
-            Keyword arguments to pass to scipy.ndimage.binary_dilation.
-
-        Returns
-        --------
-        (numpy.ndarray):
-            The dilated mask.
-        """
-
-        return binary_dilation(mask,structure=structure,**kwargs)
-    
-    def sigma_clip_3d(self, data, sigma=3, maxiters=2, axis=0, **kwargs):
-        """Measure the pixelwise sigma clipped mean from multiple images.
-
-        Parameters
-        ----------
-        data (array_like):
-            The data to be sigma clipped
-        maxiters (int):
-            The number of sigma clipping iterations.
-        axis (int):
-            The axis within data along which to perform the sigma clipping.
-        **kwargs (array_like):
-            Keyword arguments to pass to astropy.stats.sigma_clip.
-
-        Returns
-        --------
-        np.mean(clipped_data,axis=axis) (array):
-            The mean values of the sigma clipped pixel data.
-        lo (float):
-            Minimum clipping bound in final iteration.
-        hi (float):
-            Maximum clipping bound in the final iteration.
-        clipped_data (array_like):
-            The data after sigma clipping.
-        """
-
-        # Make a copy of the data.
-        clipped_data = data.copy()
-
-        # Perform required number of sigma clipping iterations.
-        for i in range(maxiters):
-            clipped_data, lo, hi = sigma_clip(clipped_data, sigma=sigma, maxiters=0, axis=0, masked=True, grow=False, return_bounds=True, **kwargs)
-            
-            # Grow the mask
-            for i in range(len(clipped_data.mask)): clipped_data.mask[i,:,:] = self.grow(clipped_data.mask[i,:,:],iterations=1)
-
-        return np.mean(clipped_data,axis=axis), lo, hi, clipped_data
-
-    def measure(self,norm_radius=8):
-        """Measure the photometric properties of a source."""
-
-        norm_radius = self.config["NORM_RADIUS"]
+        if type(config) == type(None):
+            config = self.config
 
         # Find the peak value in each cutout.
-        peaks = np.array([st.max()for st in self.psf_data])
+        peaks = np.array([cutout.max()for cutout in cutouts])
         peaks[~np.isfinite(peaks) | (peaks==0)] = 0 # Must be finite and non-zero.
 
-        # Create a mask around the centre of the PSF.
-        caper = CircularAperture((self.cutout_centre,self.cutout_centre), r=norm_radius)
-        cmask = Cutout2D(caper.to_mask(),(norm_radius,norm_radius), self.config["PSF_SIZE"],mode='partial').data
+        # Create a mask around the centre of the cutout.
+        norm_aper = CircularAperture((config["PSF_SIZE"] // 2, config["PSF_SIZE"] // 2), r=config["NORM_RADIUS"])
+        norm_mask = Cutout2D(norm_aper.to_mask(), (config["NORM_RADIUS"], config["NORM_RADIUS"]), self.config["PSF_SIZE"], mode='partial').data
 
-        # Measure the flux of the PSF.
-        phot = self.phot(radius=norm_radius)
-        sat =  [aperture_photometry(st, caper)['aperture_sum'][0] for st in np.array(self.psf_data)] # casting to array removes mask
+        # Measure the flux within the norm radius for each star.
+        phot = [aperture_photometry(cutout, norm_aper)['aperture_sum'][0] for cutout in cutouts]
+
+        # New measurement on unmasked cutout (by casting to array).
+        # Used to determine saturation.
+        sat =  [aperture_photometry(cutout, norm_aper)['aperture_sum'][0] for cutout in np.array(cutouts)]
         # Minimum unmasked value.
-        cmin = [ np.nanmin(st*cmask) for st in self.psf_data]
-
-        # Masked fraction.
-        self.star_cat['frac_mask'] = 0.0
+        cmin = [np.nanmin(cutout*norm_mask) for cutout in cutouts]
 
         # Combine with mask from recentering.
-        for i in np.arange(len(self.psf_data)):
-            self.psf_data[i].mask |= (self.psf_data[i]*cmask) < 0.0
+        for i in np.arange(len(cutouts)):
+            cutouts[i].mask |= (cutouts[i]*norm_mask) < 0.0
 
-        # Save some information to the catalogue.
-        self.star_cat['peak'] =  peaks
-        self.star_cat['cmin'] =  np.array(cmin)
-        self.star_cat['phot'] =  np.array(phot)
-        self.star_cat['saturated'] =  np.int32(~np.isfinite(np.array(sat))) # Is the image saturated?
-
-        # Measure SNR.
+        # Measure the RMS.
         rms_array = []
-        for st in self.psf_data:
-            rms, snr = self.stamp_rms_snr(st)
+        for cutout in cutouts:
+            rms = mad_std(cutout, ignore_nan=True)
             rms_array.append(rms)
 
-        self.star_cat['snr'] = 2*np.array(phot)/np.array(rms_array)
-        self.star_cat['phot_frac_mask'] = 1.0
+        # Save some information to the catalogue.
 
-        return
+        # Fraction of cutout that is masked.
+        star_catalogue['frac_mask'] = 0.0
+        # Fraction of flux that is within the normalisation radius.
+        star_catalogue['phot_frac_mask'] = 1.0
 
-    def select(self, snr_lim = 800, dshift_lim=3, mask_lim=0.40, phot_frac_mask_lim = 0.85):
-        """Select objects satisfying given conditions from the catalogue.
+        # New peak value
+        star_catalogue['peak'] =  peaks
+        # and minimum value.
+        star_catalogue['cmin'] =  np.array(cmin)
+        # Photometry measured in aperture.
+        star_catalogue['phot'] =  np.array(phot)
+        # Is the cutout saturated?
+        star_catalogue['saturated'] =  np.int32(~np.isfinite(np.array(sat)))
+        # The signal to noise ratio.
+        star_catalogue['snr'] = 2*np.array(phot)/np.array(rms_array)
 
-        Parameters
-        ----------
-        snr (float):
+        return star_catalogue, cutouts
+    
+    def select(self, star_catalogue, snr_lim = 800, dshift_lim=3, mask_lim=0.40, phot_frac_mask_lim = 0.85):
+        """
+        Select objects satisfying given conditions from the catalogue.
+
+        Arguments
+        ---------
+        star_catalogue (astropy.table.table.QTable)
+            Catalogue containing candidate star information.
+        snr (float)
             Minimum accepted SNR.
-        dshift (float):
+        dshift (float)
             Maximum accepted difference in shift measured when recentering.
-        mask_lim (float):
+        mask_lim (float)
             Maximum accepted fraction of masked pixels.
-        phot_frac_mask_lim (float):
-            Minimum accepted flux within "NORM_RADIUS" of the centre.
+        phot_frac_mask_lim (float)
+            Minimum accepted fraction of flux within "NORM_RADIUS" of the centre.
+
+        Return
+        ------
+        star_catalogue (astropy.table.table.QTable)
+            Star catalogue with updated selection column.
         """
 
-        # Check which objects in the catalogue satisfy all conditions.
-        self.ok = (self.star_cat['dshift'] < dshift_lim) & (self.star_cat['snr'] > snr_lim) & (self.star_cat['frac_mask'] < mask_lim) & (self.star_cat['phot_frac_mask'] > phot_frac_mask_lim)
+        # Check which objects in the catalogue satisfy all conditions and add flag to catalogue.
+        accept = (star_catalogue['dshift'] < dshift_lim) & (star_catalogue['snr'] > snr_lim) & (star_catalogue['frac_mask'] < mask_lim) & (star_catalogue['phot_frac_mask'] > phot_frac_mask_lim)
+        star_catalogue['accept'] = np.int32(accept)
 
-        self.star_cat['ok'] = np.int32(self.ok)
-        # All include individual conditions.
-        self.star_cat['ok_shift'] = (self.star_cat['dshift'] < dshift_lim)
-        self.star_cat['ok_snr'] = (self.star_cat['snr'] > snr_lim)
-        self.star_cat['ok_frac_mask'] = (self.star_cat['frac_mask'] < mask_lim)
-        self.star_cat['ok_phot_frac_mask'] = (self.star_cat['phot_frac_mask'] > phot_frac_mask_lim)
+        # Also include individual conditions.
+        star_catalogue['accept_shift'] = (star_catalogue['dshift'] < dshift_lim)
+        star_catalogue['accept_snr'] = (star_catalogue['snr'] > snr_lim)
+        star_catalogue['accept_frac_mask'] = (star_catalogue['frac_mask'] < mask_lim)
+        star_catalogue['accept_phot_frac_mask'] = (star_catalogue['phot_frac_mask'] > phot_frac_mask_lim)
 
         # Format the columns to 3 D.P
-        for c in self.star_cat.colnames:
-            if 'id' not in c: self.star_cat[c].format='.3g'
+        for c in star_catalogue.colnames:
+            if 'id' not in c: star_catalogue[c].format='.3g'
 
-        return
-
-    def stack(self,sigma=3,maxiters=2):
-        """Stack individual PSFs based on a pixelwise sigma clipped mean.
-
-        Parameters
-        ----------
-        sigma (float):
-            Sigma to pass to the sigma clipping function.
-        maxiters (float):
-            Maximum number of sigma clipping iterations.
+        return star_catalogue
+    
+    def stack(self, star_catalogue, masked_cutouts, cutouts, config = None, save_figs = True, science_filename = 'science_filename', outdir = './'):
         """
+        Stack individual PSFs based on a pixelwise sigma clipped mean.
+
+        Arguments
+        ---------
+        star_catalogue (astropy.table.table.QTable)
+            Catalogue containing candidate star information.
+        masked_cutouts (numpy.ndarray)
+            3D-array of star cutouts with saturated regions masked.
+        cutouts (numpy.ndarray)
+            3D-array of unmasked star cutouts.
+        config (None, dict)
+            The config dictionary containing parameter choices for each stage.
+            If None, use the class attribute config.
+        save_figs (bool)
+            Save figure showing masked regions of each cutout.
+        science_filename (str)
+            Name of science image file. Only used for saving figure.
+        outdir (str)
+            Directory in which to save figure.
+
+        Returns
+        -------
+        star_catalogue (astropy.table.table.QTable)
+            Star catalogue updated with stacking information.
+        masked_cutouts (numpy.ndarray)
+            Star cutouts with masks updated by sigma clipping.
+        stack (numpy.ndarray)
+            Average 2D PSF measured by sigma-clipped stacking.
+        """
+
+        if type(config) == type(None):
+            config = self.config
 
         # Get indexes of acceptable objects.
-        iok = np.where(self.ok)[0]
+        i_accept = np.where(star_catalogue['accept'])[0]
 
-        print(f'Measuring average PSF based on {len(iok)} cutouts...')
+        print(f' Stacking {len(i_accept)} robust candidates...')
 
         # Get flux within normalisation radius.
-        norm = self.star_cat['phot'][iok]
+        norm = star_catalogue['phot'][i_accept]
 
-        # Find fraction of flux within the normalisation radius.
-        data = self.psf_data_orig[iok].copy()
-        for i in np.arange(len(data)): data[i] = data[i]/norm[i]
+        # Normalise by flux within the normalisation radius.
+        unmasked_cutouts = cutouts[i_accept].copy()
+        for i in np.arange(len(unmasked_cutouts)): 
+            unmasked_cutouts[i] = unmasked_cutouts[i]/norm[i]
 
-        # Stack the images based on the pixelwise sigma clipped mean
-        stack, lo, hi, clipped = self.sigma_clip_3d(data,sigma=sigma,axis=0,maxiters=maxiters)
+        # Stack the images based on the pixel-wise sigma clipped mean.
 
-        # The remaining PSFs after clipping.
-        self.clipped = clipped
+        # Make a copy of the data.
+        clipped_data = unmasked_cutouts.copy()
 
-        for i in np.arange(len(data)):
+        # Perform required number of sigma clipping iterations.
+        for i in range(config['MAX_ITERS']):
+            clipped_data, lo, hi = sigma_clip(clipped_data, sigma=config['STACK_SIGMA'], maxiters=0, axis=0, masked=True, grow=False, return_bounds=True)
+            
+            # Grow the mask
+            for i in range(len(clipped_data.mask)): 
+                clipped_data.mask[i,:,:] = binary_dilation(clipped_data.mask[i,:,:], structure=disk(config['DILATE_RADIUS']), iterations=1)
+
+        # The single averaged PSF.
+        stack = np.mean(clipped_data,axis=0)
+
+        for i in np.arange(len(unmasked_cutouts)):
             # Does object satisfy criteria and also have its central pixel unmasked?
-            self.ok[iok[i]] = self.ok[iok[i]] and ~self.clipped[i].mask[self.cutout_centre,self.cutout_centre]
+            star_catalogue['accept'][i_accept[i]] = star_catalogue['accept'][i_accept[i]] and ~clipped_data[i].mask[config["PSF_SIZE"] // 2, config["PSF_SIZE"] // 2]
             # Use the clipped mask.
-            self.psf_data[iok[i]].mask = self.clipped[i].mask
+            masked_cutouts[i_accept[i]].mask = clipped_data[i].mask
             # The fraction of pixels that are masked.
-            mask = self.psf_data[iok[i]].mask
-            self.star_cat['frac_mask'][iok[i]] = np.size(mask[mask]) / np.size(mask)
+            mask = masked_cutouts[i_accept[i]].mask
+            star_catalogue['frac_mask'][i_accept[i]] = np.size(mask[mask]) / np.size(mask)
     
-        if self.save_figs == True:
+        if save_figs == True:
             # Save the masked cutouts of all the stacked sources.
-            title = ['{}: Mask - {:.1f}%'.format(ii, 100*frac) for ii,frac in zip(self.star_cat['id'][iok],self.star_cat['frac_mask'][iok])]
-            fig, ax = self.imshow(self.psf_data[iok], title=title, nsig=30)
-            fig.savefig('_'.join([self.outname, 'stacked_stamps.pdf']),dpi=300)
-
-        # Save the stacked PSF.
-        self.psf_average = stack
+            title = ['{}: Mask - {:.1f}%'.format(ii, 100*frac) for ii,frac in zip(star_catalogue['id'][i_accept],star_catalogue['frac_mask'][i_accept])]
+            fig, ax = self.imshow(masked_cutouts[i_accept], title=title, nsig=30)
+            fig.savefig(f'{outdir}/{os.path.basename(science_filename.replace(".fits", "_masked_cutouts.pdf"))}',dpi=300)
+            plt.close()
 
         # Calculate the fraction of the flux within the normalisation radius.
-        self.star_cat['phot_frac_mask'] = self.phot(radius=self.config["NORM_RADIUS"])/self.star_cat['phot']
+        aper = CircularAperture((config["PSF_SIZE"] // 2,config["PSF_SIZE"] // 2), r = config["NORM_RADIUS"])
+        phot = [aperture_photometry(cutout, aper)['aperture_sum'][0] for cutout in masked_cutouts]
+        star_catalogue['phot_frac_mask'] = phot/star_catalogue['phot']
 
-        return
-
-    def save(self, outname=''):
-        """Save stacked PSF to a fits file and the masked PSF stamps figure.
-
-        Parameters
-        ----------
-        outname (str):
-            Base name of the output files.
-        """
-
-        # Save the stacked empirical PSF.
-        hdr = self.hdr
-        hdr['HEIRARCH RENORMALISED'] = (False, 'Renormalised based on predicted EE.')
-        fits.writeto('_'.join([outname, 'EPSF.fits']), np.array(self.psf_average)/np.sum(np.array(self.psf_average)), header = hdr, overwrite=True)
-
-        # Save the final star catalogue.
-        self.star_cat[self.ok].write('_'.join([outname, 'psf_cat.fits']),overwrite=True)
-
-
-        if self.save_figs == True:
-
-            # Original unmasked data.
-            data = self.psf_data_orig
-
-            # Save the cutouts of all of the identified peaks.
-            title = ['ID: {}'.format(ii) for ii in self.star_cat['id']]
-            fig, ax = self.imshow(data, title=title, nsig=30)
-            fig.savefig('_'.join([outname, 'all_stamps.pdf']),dpi=300)
-
-            # Save Curve Of Growth.
-            self.show_cogs([self.psf_average], title = self.band, linear = False, pixscale=self.config["PIXEL_SCALE"], label=[f'Average {self.band} PSF'], outname=self.outname)
-
-    def renorm_psf(self, psfmodel, filt, fov, pixscl):
-        """Renormalise the PSF based on the expected encircled energy.
-
-        Parameters
-        ----------
-        psfmodel (numpy.ndarray):
-            The 2D PSF to renormalise.
-        filt (str):
-            The filter code correspnding to the band used to measure the PSF
-        fov (float):
-            The FOV of the PSF. 
-        pixscl (float):
-            The pixel scale of the PSF.
-        """
-        
-        filt = filt.upper()
-
-        # Encircled energy expectation from telescope documentation.
-        encircled = {}
-        encircled['F225W'] = 0.993
-        encircled['F275W'] = 0.984
-        encircled['F336W'] = 0.9905
-        encircled['F435W'] = 0.979
-        encircled['F606W'] = 0.975
-        encircled['F775W'] = 0.972
-        encircled['F814W'] = 0.972
-        encircled['F850LP'] = 0.970
-        encircled['F098M'] = 0.974
-        encircled['F105W'] = 0.973
-        encircled['F125W'] = 0.969
-        encircled['F140W'] = 0.967
-        encircled['F160W'] = 0.966
-        encircled['F090W'] = 0.9837
-        encircled['F115W'] = 0.9822
-        encircled['F150W'] = 0.9804
-        encircled['F200W'] = 0.9767
-        encircled['F277W'] = 0.9691
-        encircled['F356W'] = 0.9618
-        encircled['F410M'] = 0.9568
-        encircled['F444W'] = 0.9546
-
-        # Normalize to correct for missing flux
-        w, h = np.shape(psfmodel) # PSF shape.
-        Y, X = np.ogrid[:h, :w]
-
-        r = fov / 2. / pixscl # Half side length of PSF in pixels.
-        centre = [w/2., h/2.] # Centre of PSF
-
-        dist_from_centre = np.sqrt((X - centre[0])**2 + (Y-centre[1])**2) # Distance of each pixel from centre.
-
-        psfmodel /= np.sum(psfmodel[dist_from_centre < r]) # Normalise by total flux in sphere radius r from centre.
-        psfmodel *= encircled[filt] # Multiply by encircled fraction.
-
-        # Save to seperate file.
-        hdr = self.hdr
-        hdr['HEIRARCH RENORMALISED'] = (True, 'Renormalised based on predicted EE.')
-        fits.writeto('_'.join([self.outname, 'EPSF_renorm.fits']), np.array(psfmodel),header=hdr,overwrite=True)
-
-        return
-
-    def show_cogs(self,*args, title, linear, pixscale, label, outname):
-        """Display COG and profile of measured PSF.
-
-        Parameters
-        ----------
-        *args (list):
-            The list of PSFs for which to measure the COG.
-        title (str):
-            The title of the figures.
-        linear (bool):
-            Plot in linear scale on the x-axis. If False, use square root scale. 
-        pixscale (float):
-            The pixel scale of the PSFs.
-        label (list):
-            List of labels for the PSFs
-        outname (str):
-            Base output name of the figures.
-        """
-
-        # The square root scale to use if not linear.
-        mscale.register_scale(SquareRootScale)
-        
-        npsfs = len(args)
-        nfilts = len(args[0])
+        return star_catalogue, masked_cutouts, stack 
     
-        # Set the figure size/
-        plt.figure(figsize=(20,4.5))
+    def measure_PSF(self, science_filenames, error_filenames, bands = None, parameters = {}, save_PSF = False, save_figs = False, outdir = './'):
+        """
+        Run star idenfication and stacking methods to obtain average PSF(s).
+        Add generated PSF(s) to internal storage for later use.
 
-        # x axis ticks in arcseconds.
-        xtick = [0.1,0.2,0.3,0.5,0.7,1.0,1.5,2.0]
+        Arguments
+        ---------
+        science_filenames (str, list)
+            Fits filename(s) containing science image(s) from which to identify stars.
+        error_filenames (str, list)
+            Fits filenames containing error map of each science image.
+        bands (str, list, None)
+            The broadband filters that these images correspond to.
+            If None, use zero based indexing.
+        parameters (dict)
+            Parameter key-value pairs to update in the config file just for this run.
+        save_PSF (bool)
+            Should the PSF be saved to a fits file?
+        save_figs (bool)
+            Should diagnostic figures be saved?
+        outdir (str)
+            Directory in which to save figures.
+        """
 
-        # Set empty label if none given.
-        if not label:
-            label = ['' for p in range(npsfs)]
-
-        # In theory supports multiple PSFs.
-        for filti in range(nfilts):
-
-            # Measure the curve of growth.
-            psf_ref = args[0][filti]
-            r, cog_ref, prof_ref = self.measure_curve_of_growth(psf_ref,nradii=50)
-            r = r * pixscale # Convert radius to arcsec
-
-            # Plot the profile.
-            plt.subplot(141)
-            plt.plot(r,prof_ref,label=label[0])
-            plt.title(title+' profile')
-            if not linear:
-                plt.xscale('squareroot')
-                plt.xticks(xtick)
-            plt.yscale('log')
-            plt.xlim(0,1)
-            plt.ylim(1e-5,1)
-            plt.xlabel('arcsec')
-            plt.axhline(y=0,alpha=0.5,c='k')
-            plt.axvline(x=0.16,alpha=0.5,c='k',ls='--')
-            ax=plt.gca()
-            rms, snr = self.stamp_rms_snr(psf_ref)
-            dx, dy = centroid_com(psf_ref)
-            plt.text(0.6,0.8,'snr = {:.2g} \nx0,y0 = {:.2f},{:.2f} '.format(snr,dx,dy),transform=ax.transAxes, c='C0')
-
-            # Plot the curve of growth.
-            plt.subplot(142)
-            plt.plot(r,cog_ref,label=label[0])
-            plt.xlabel('arcsec')
-            plt.title('cog')
-            if not linear:
-                plt.xscale('squareroot')
-                plt.xticks(xtick)
-            plt.axvline(x=0.16,alpha=0.5,c='k',ls='--')
-            plt.axvline(x=0.16,alpha=0.5,c='k',ls='--')
-            plt.axvline(x=0.08,alpha=0.5,c='k',ls='--')
-            plt.axvline(x=0.04,alpha=0.5,c='k',ls='--')
-            plt.xlim(0.02,1)
-
-            cogs = []
-            profs = []
-            psfs = [psf_ref]
-            for psfi in np.arange(1, npsfs):
-                psf = args[psfi][filti]
-                _, cog, prof = self.measure_curve_of_growth(psf,nradii=50)
-                cogs.append(cog)
-                profs.append(prof)
-                dx, dy = centroid_com(psf)
-                rms, snr = self.stamp_rms_snr(psf)
-
-                plt.subplot(141)
-                plt.plot(r,prof)
-
-                plt.text(0.5,0.8-psfi*0.1,'snr = {:.2g} \nx0,y0 = {:.2f},{:.2f} '.format(snr,dx,dy),transform=ax.transAxes, c='C'+str(psfi))
-                plt.xlim(0.02,1)
-
-                plt.subplot(142)
-                plt.plot(r,cog,label=label[psfi],c='C'+str(psfi))
-                plt.legend()
-
-                psfs.append(psf)
-
-            plt.savefig('_'.join([outname,'cog.pdf']),dpi=300)
-
-            _ = self.imshow(psfs,cross_hairs=True,nsig=50,title=label)
-
-            plt.savefig('_'.join([outname,'average.pdf']),dpi=300)
-        
-        return
-    
-    def check_directory(self, dir, default = 'psf_outputs'):
-        """If a directory is given check it exists and create it.
-            If none given, use a default output directory.
+        # If single image given, convert to list.
+        if type(science_filenames) == str:
+            science_filenames = [science_filenames]
+            error_filenames = [error_filenames]
+        if type(bands) == str:
+            bands = [bands]
             
-        Parameters
-        ----------
-        dir (str):
-            The directory to check.
-        default (str):
-            The default directory name to resort to.
-        
-        Returns
-        -------
-        dir/default (str):
-            The final directory path.
-        """
-        
-        if dir is not None:
-            if os.path.isdir(dir) == False:
-                os.makedirs(dir)
-            return dir
-        # If none given, create and store in default directory
-        else:
-            if os.path.isdir(default) == False:
-                os.makedirs(default)
-            return default
+        # If bands are not defined, just use index.
+        if bands == None:
+            bands = np.arange(0, len(science_filenames))
 
-    def measure_psf(self, psf_dir = None, save_figs = True):
-        """Employ the functions defined above to measure an empirical PSF from an image.
-        
-        Parameters
-        ----------
-        psf_dir (str):
-            The directory within which to store all PSFs and diagnostic figures. If None, create and store in psf_outputs.
-        save_figs (bool):
-            Whether or not to save diagnostic figures.
-        """
+        # Overwrite some config parameters just for this run.
+        config = copy.deepcopy(self.config)
+        for (key, value) in parameters.items():
+                if key in config:
+                    config[key] = value
+                    hdr[f'HIERARCH {key}'] = str(value)
+                else:
+                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.', stacklevel=2)         
 
-        self.save_figs = save_figs
+        for science_filename, error_filename, band in zip(science_filenames, error_filenames, bands):
 
-        # Set the output directory and base filename.
-        self.psf_dir = self.check_directory(psf_dir)
-        self.outname = f'{psf_dir}/{os.path.basename(self.image_filename).removesuffix(".fits")}'
+            print(f'Measuring empirical PSF from {science_filename}...')
 
-        # Find the stars.
-        peaks, stars = self.find_stars()
+            # Get image and corresponding header.
+            sci, hdr = fits.getdata(science_filename, header = True)
+            err = fits.getdata(error_filename)
 
-        # Only use stars of a particular magnitude.
-        ok = (peaks['mag'] > self.config['MAG_MAX']) & ( peaks['mag'] < self.config['MAG_MIN'])
-        print(f' Selected {sum(ok)} objects')
-        self.get_acceptable_cutouts(peaks[ok])
+            # Get information and cutouts of stars in the image.
+            stars, cutouts = self.find_stars(sci, err, config, save_figs=save_figs, science_filename = science_filename, outdir = outdir)
 
-        # Centre the images.
-        self.centre(window=self.config["WINDOW"])
-        # Measure objects.
-        self.measure()
-        # Select objects with acceptable SNR and shift.
-        self.select(self.config["SNR_LIM"], self.config["DSHIFT_LIM"], 0.99, 0.99)
-        # Stack objects.
-        self.stack(sigma=self.config["STACK_SIGMA"])
-        # Save the PSF.
-        self.save(self.outname)
-        # Renormalise to account for missing flux.
-        self.renorm_psf(self.psf_average, self.band, self.config["PIXEL_SCALE"]*self.config["PSF_SIZE"], self.config["PIXEL_SCALE"])
-        
-        if self.save_figs == True:
-            # Select dominant objects for plotting. <40% total masked and >85% of flux within the aperture.
-            self.select(self.config["SNR_LIM"], self.config["DSHIFT_LIM"], 0.4, 0.85)
+            # Generate new cutouts at the full PSF size.
+            psfs = np.array([Cutout2D(sci, (stars['x'][i], stars['y'][i]), config["PSF_SIZE"], mode='partial').data for i in np.arange(len(stars))])
+            psfs_masked = np.ma.array(psfs, mask = ~np.isfinite(psfs) | (psfs == 0))
 
-            # Save cutouts of the dominant stamps used for PSF generation.
-            title = ['{}: {:.1f} AB, ({:.1f}, {:.1f})'.format(ii, mm,xx,yy) for ii,mm,xx,yy in zip(peaks['id'][self.ok],peaks['mag'][self.ok],peaks['x0'][self.ok],peaks['y0'][self.ok])]
-            self.imshow(self.psf_data[self.ok],nsig=50,title=title)
-            plt.savefig('_'.join([self.outname, 'dominant_stamps.pdf']),dpi=300)
-        
+            # Move stars to the centre of the cutouts.
+            stars, psfs_masked = self.centre(stars, psfs_masked, config)
+
+            # Measure their flux and SNR.
+            stars, psfs_masked = self.measure(stars, psfs_masked, config)
+
+            # Select objects with acceptable shift and SNR.
+            stars = self.select(stars, config["SNR_LIM"], config["DSHIFT_LIM"], 0.99, 0.99)
+
+            # Stack the cutouts to create a single PSF.
+            stars, psfs_masked, psf_average = self.stack(stars, psfs_masked, psfs, config, save_figs=save_figs, science_filename = science_filename, outdir = outdir)
+
+            # Normalise the PSF and remove mask.
+            psf_average = np.array(psf_average)/np.sum(np.array(psf_average))
+
+            if save_PSF == True:
+                fits.writeto(f'{outdir}/{os.path.basename(science_filename.replace(".fits", "_EPSF.fits"))}', psf_average/np.sum(psf_average), header = hdr, overwrite=True)
+
+            if save_figs == True:
+
+                fig, ax = plt.subplots()
+                sig = mad_std(psf_average[(psf_average != 0) & np.isfinite(psf_average)])
+                norm = ImageNormalize(np.float32(psf_average), vmin=-50*sig, vmax=50*sig, stretch=LinearStretch())
+                plt.imshow(psf_average, norm = norm, origin='lower', interpolation='none')
+                ax.set_xticks([])
+                ax.set_yticks([])
+                plt.savefig(f'{outdir}/{os.path.basename(science_filename.replace(".fits", "_EPSF.pdf"))}')
+                plt.close()
+            
+            if band != None:
+                if band in self.PSFs.keys():
+                    raise Warning(f'Previously measured {band} PSF overwritten.')
+                self.PSFs[band] = psf_average
+                self.filenames[band] = [science_filename, error_filename]
+
+            print(f'Done.')
+
         return
-
-    def plot_profile(self, psf, target):
-        """Plot a profile of two PSFs.
+    
+    def compare_COG(self, radii, bands = None):
+        """
+        Create a diagnostic plot, comparing the COGs of measured PSFs.
         
-        Parameters
-        ----------
-        psf (np.2darray):
-            The first PSF used to genrate a profile.
-        target (np.2darray):
-            The second PSF for which to generate a profile.
+        Arguments
+        ---------
+        radii (array-like)
+            The radii at which to measure the enclosed energy.
+        bands (array-like)
+            The PSFs of these bands will be plotted.
+            If None, plot all measured PSFs.
+
+        Returns
+        -------
+        fig (pyplot.figure)
+            Pyplot figure object.
+        ax (pyplot.axes)
+            Pyplot axes object.
+        """
+
+        # If no bands indicated, use all.
+        if bands == None:
+            bands = self.PSFs.keys()
+
+        # Set up the plot.
+        fig, ax = plt.subplots()
+        ax.minorticks_on()
+        ax.tick_params(axis='both', which = 'both', direction='in')
+        #ax.tick_params(axis='y', direction='in')
+        plt.xlabel('Radius [pix]')
+        plt.ylabel('Enclosed Energy')
+        plt.grid(visible=True, alpha = 0.1)
+
+        # For each PSF.
+        for band, psf in self.PSFs.items():
+
+            if band in bands:
+
+                # Measure the COG
+                radii, cog, profile = self.measure_curve_of_growth(psf, radii, norm = False)
+
+                ax.plot(radii, cog, label = band, alpha = 0.8)
+
+        plt.legend()
+        plt.show()
+
+        return fig, ax
+    
+    def plot_profile(self, source, target, radii_pix):
+        """Plot the profiles of two PSFs.
+        
+        Arguments
+        ---------
+        source (np.ndarray)
+            The first PSF for which to measure profile.
+        target (np.ndarray)
+            The second PSF for which to measure profile.
+        radii_pix (array-like)
+            The radii in pixels at which to measure the enclosed energy.
         
         Returns
         -------
-        radii_pix (list):
-            The radii steps used for the profile [pix]
-        flux_psf (list):
-            Enclosed energy of the first PSF.
-        flux_target (list):
-            Enclosed energy of the second PSF.
+        radii_pix (array-like)
+            The radii in pixels at which the enclosed energy was measured.
+        flux_source (tuple)
+            Profile of the first PSF.
+        flux_target (tuple)
+            Profile of the second PSF.
         """
 
-        shape = psf.shape
-        center = (shape[1]//2, shape[0]//2)
-        radii_pix = np.arange(1,40,1)
+        shape = source.shape
+        center = (shape[1] // 2, shape[0] // 2)
         apertures = [CircularAperture(center, r=r) for r in radii_pix] #r in pixels
 
-        phot_table = aperture_photometry(psf, apertures)
-        flux_psf = np.array([phot_table[0][3+i] for i in range(len(radii_pix))])
+        phot_table = aperture_photometry(source, apertures)
+        flux_source = np.array([phot_table[0][3+i] for i in range(len(radii_pix))])
 
         phot_table = aperture_photometry(target, apertures)
         flux_target = np.array([phot_table[0][3+i] for i in range(len(radii_pix))])
 
-        return radii_pix[:-1], (flux_psf)[0:-1], (flux_target)[0:-1]
-
-    def create_matching_kernel(self, target_PSF, angle_source = 0, angle_target = 0, matching_band = None, kernel_dir = None, save_figs = True):
+        return radii_pix[:-1], (flux_source)[0:-1], (flux_target)[0:-1]
+    
+    def generate_kernel(self, target_band, bands = None, parameters = {}, save_kernel = True, save_figs = True, outdir = './'):
         """Create a kernel to match the measured PSF to a target PSF.
 
-        Parameters
-        ----------
-        target (str/PSF):
-            The target PSF to match to. If string should be a filepath to the target PSF.
-            If PSF should be a PSF object that has already called the 'measure_psf' method.
-        kernel_dir (str):
-            Directory within which to store kernels and diagnostic figures. If none, use PSF directory.
-        save_figs (bool):
-            Whether or not to save diagnostic figures.
+        Arguments
+        ---------
+        target_band (str)
+            Key of the target PSF to match to as defined when measured.
+        bands (list, None)
+            The bands to generate matching kernels for. Will ignore target.
+            If None, use measured PSFs.
+        parameters (dict)
+            Parameter key-value pairs to update in the config file just for this run.
+        save_kernel (bool)
+            Should the kernel be saved as a fits file?
+        save_figs (bool)
+            Should diagnostic figures be saved?
+        outdir (str)
+            The directory in which to store temporary and requested outputs.
         """
 
-        self.save_figs = save_figs
+        # Overwrite some config parameters just for this run.
+        config = copy.deepcopy(self.config)
+        for (key, value) in parameters.items():
+                if key in config:
+                    config[key] = value
+                else:
+                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.', stacklevel=2)
 
-        # Set the output directory and base output name.
-        kernel_dir = self.check_directory(kernel_dir, self.psf_dir)
-        self.kernel_outname = f'{kernel_dir}/{os.path.basename(self.image_filename).removesuffix(".fits")}'
+        hdr = fits.Header()
+        hdr['PIXSCALE'] = (config['PIXEL_SCALE'], 'Pixel scale in arcsec')
 
-        # Read in the target PSF
-        if type(target_PSF) == str:
-            if matching_band == None:
-                raise SyntaxError('If target_PSF is a filepath, "matching_band" must be set as the corresponding filter code.')
-            target_name = os.path.basename(target_PSF)
-            target, hdr = fits.getdata(target_PSF, header=True)
-            self.matching_band = matching_band
-        if type(target_PSF) == PSF:
-            target_name = os.path.basename(target_PSF.outname)
-            target = target_PSF.psf_average
-            hdr = target_PSF.hdr
-            self.matching_band = target_PSF.band
-        else:
-            raise TypeError(f'target_PSF must be type "str" or "PSF" but is type {type(target_PSF)}.')
+        # Get the target PSF.
+        target = self.PSFs[target_band]
 
+        # Create sub-dict in Kernels for this target.
+        self.Kernels[target_band] = {}
         
-        print(f'Generating a matching kernel from {self.band} to {self.matching_band}:')
-
         # Oversample if required.
-        if self.config['OVERSAMPLE'] > 1:
-            print(f' Oversampling by {self.config["OVERSAMPLE"]}x...')
-            target = zoom(target, self.config['OVERSAMPLE'])
+        if config['OVERSAMPLE'] > 1:
+            print(f' Oversampling by {config["OVERSAMPLE"]}x...')
+            target = zoom(target, config['OVERSAMPLE'])
 
         # Renormalise
         target /= target.sum()
 
-        # Save to temporary file.
-        fits.writeto(f'{os.path.dirname(self.kernel_outname)}/target.temp.fits',target,header=hdr,overwrite=True)
+        # Save to temporary file for passing to PyPHER.
+        fits.writeto(f'{outdir}/target.temp.fits', target, header = hdr, overwrite=True)
 
-        # Now do the same with the source PSF.
-        source = fits.getdata('_'.join([self.outname, 'EPSF.fits']))
-        if self.config['OVERSAMPLE'] > 1:
-            print(f' Oversampling source PSF by {self.config["OVERSAMPLE"]}x')
-            source = zoom(source, self.config['OVERSAMPLE'])
+        # If no bands indicated, measure kernel for all.
+        if bands == None:
+            bands = self.PSFs.keys()
+
+        # For each band.
+        for band, source in self.PSFs.items():
+
+            # Skip the target or omitted bands.
+            if (band == target_band) or (band not in bands):
+                continue
+
+            # Oversample if required.
+            if config['OVERSAMPLE'] > 1:
+                source = zoom(source, config['OVERSAMPLE'])
     
-        source /= source.sum()
-
-        fits.writeto(f'{os.path.dirname(self.kernel_outname)}/source.temp.fits',source,header=hdr,overwrite=True)
-
-        # Filename of matching kernel.
-        match_name = f'{self.kernel_outname}_to_{target_name}_kernel.fits'
-        # Remove if already exists as pypher will not overwrite.
-        if os.path.isfile(match_name):
-            os.remove(match_name)
-
-        # Run pypher
-        print(' Running pypher...')
-        pypherCMD = ['pypher', f'{os.path.dirname(self.kernel_outname)}/source.temp.fits', f'{os.path.dirname(self.kernel_outname)}/target.temp.fits', match_name, '-r', str(self.config["R_PARAMETER"]), '-s', str(angle_source), '-t', str(angle_target)]
-        p = subprocess.Popen(pypherCMD, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        for line in p.stderr:
-            print(line.decode(encoding="UTF-8"))
-        out, err = p.communicate()
-
-        # Remove the temporary files.
-        os.remove(f'{os.path.dirname(self.kernel_outname)}/target.temp.fits')
-        os.remove(f'{os.path.dirname(self.kernel_outname)}/source.temp.fits')
-
-        # Store the matching kernel for later.
-        self.matching_kernel, matching_hdr = fits.getdata(match_name, header=True)
-
-        # If oversampled, renormalise and overwrite saved and stored kernels.
-        if self.config['OVERSAMPLE'] > 1:
-
             # Renormalise
-            self.matching_kernel = block_reduce(self.matching_kernel, block_size=self.config['OVERSAMPLE'], func=np.sum)
-            self.matching_kernel /= self.matching_kernel.sum()
-            self.matching_kernel = np.float32(np.array(self.matching_kernel))
+            source /= source.sum()
 
-        matching_hdr['PSF_S'] = (self.band, 'Source PSF filter')
-        matching_hdr['PSF_T'] = (self.matching_band, 'Target PSF filter')
-        matching_hdr['ANGLE_S'] = (angle_source, 'Angle of source PSF')
-        matching_hdr['ANGLE_T'] = (angle_target, 'Angle of target PSF')
+            fits.writeto(f'{outdir}/source.temp.fits', source, header = hdr, overwrite=True)
 
-        # Overwrite original kernel.
-        fits.writeto(match_name, self.matching_kernel, header=matching_hdr, overwrite=True)
+            # Filename of matching kernel.
+            match_name = f'{outdir}/{band}_to_{target_band}_kernel.fits'
 
-        # Construct the diagnostic figure.
-        if self.save_figs == True:
-        
-            print(f' Plotting kernel checkfile...')
+            # Remove if already exists as pypher will not overwrite.
+            if os.path.isfile(match_name):
+                os.remove(match_name)
 
-            # Read in the source and target PSFs that have not been oversampled.
-            source = fits.getdata('_'.join([self.outname, 'EPSF.fits']))
-            target = fits.getdata('_'.join([target_PSF.outname, 'EPSF.fits']))
+            # Run pypher
+            print(' Running pypher...')
+            pypherCMD = ['pypher', f'{outdir}/source.temp.fits', f'{outdir}/target.temp.fits', match_name, '-r', str(config["R_PARAMETER"]), '-s', str(config["ANGLE_SOURCE"]), '-t', str(config["ANGLE_TARGET"])]
+            p = subprocess.Popen(pypherCMD, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for line in p.stderr:
+                print(line.decode(encoding="UTF-8"))
+            out, err = p.communicate()
 
-            plt.figure(figsize=(32,4))
+            # Remove the temporary source file.
+            os.remove(f'{outdir}/source.temp.fits')
 
-            # Normalisation function for images.
-            simple = simple_norm(self.matching_kernel,stretch='linear',power=1, min_cut=-5e-4, max_cut=5e-4)
+            # Load the generated kernel and delete the PyPHER file.
+            kernel = fits.getdata(match_name)
+            os.remove(match_name)
+            os.remove(match_name.replace('.fits', '.log'))
 
-            # Show the source, target and kernel images.
-            plt.subplot(1,7,1)
-            plt.title('Source: '+self.band)
-            plt.imshow(source, norm=simple, interpolation='antialiased',origin='lower')
-            plt.subplot(1,7,2)
-            plt.title('Target: '+self.matching_band)
-            plt.imshow(target, norm=simple, interpolation='antialiased',origin='lower')
-            plt.subplot(1,7,3)
-            plt.title('Kernel')
-            plt.imshow(self.matching_kernel, norm=simple, interpolation='antialiased',origin='lower')
+            # If oversampled, renormalise and overwrite saved and stored kernels.
+            if config['OVERSAMPLE'] > 1:
 
-            # Convolve the source with the kernel.
-            filt_psf_conv = convolve_fft(source, self.matching_kernel)
+                kernel = block_reduce(kernel, block_size=config['OVERSAMPLE'], func=np.sum)
+                kernel /= kernel.sum()
+                kernel = np.float32(np.array(kernel))
 
-            # Show convolved PSF.
-            plt.subplot(1,7,4)
-            plt.title("Convolved "+self.band)
-            plt.imshow(filt_psf_conv, norm=simple, interpolation='antialiased',origin='lower')
+            # Store for later use
+            self.Kernels[target_band][band] = kernel
 
-            # Show the residual after convolution.
-            plt.subplot(1,7,5)
-            plt.title('Residual')
-            res = filt_psf_conv-target
-            plt.imshow(res, norm=simple, interpolation='antialiased',origin='lower')
+            # and save to fits file if requested.
+            if save_kernel == True:
 
-            # Show the COGs of convolved and target PSFs and the ratio.
-            plt.subplot(1,7,7)
-            r,pf,pt = self.plot_profile(filt_psf_conv,target)
-            plt.plot(r*self.config["PIXEL_SCALE"], pf/pt)
-            plt.ylim(0.95,1.05)
-            plt.xlabel('Radius [arcsec]')
-            plt.ylabel('EE convolved source / EE target')
+                # Create the header.
+                hdr = fits.Header()
+                hdr['SOURCE'] = (band, 'Source PSF')
+                hdr['TARGET'] = (target_band, 'Target PSF')
+                hdr['OVERSAMP'] = (config["OVERSAMPLE"], 'Degree of oversampling')
+                hdr['ANGLE_S'] = (config["ANGLE_SOURCE"], 'Angle of source PSF')
+                hdr['ANGLE_T'] = (config["ANGLE_TARGET"], 'Angle of target PSF')
 
-            plt.subplot(1,7,6)
-            plt.plot(r*self.config["PIXEL_SCALE"],pf,lw=3, label = 'Convolved source')
-            plt.plot(r*self.config["PIXEL_SCALE"],pt,'--',alpha=0.7,lw=3, label = 'Target')
-            plt.xlabel('Radius [arcsec]')
-            plt.ylabel('Enclosed energy')
-            plt.legend()
+                fits.writeto(f'{outdir}/{os.path.basename(self.filenames[band][0]).replace(".fits", f"_kernel_{target_band}.fits")}', kernel, header= hdr, overwrite=True)
+
+            # Construct the diagnostic figure.
+            if save_figs == True:
             
-            plt.tight_layout()
-            plt.savefig(f'{self.kernel_outname}_kernel_diagnostic.pdf',dpi=300)
-            plt.close()
+                print(f' Plotting kernel checkfile...')
+
+                plt.figure(figsize=(32,4))
+
+                # Normalisation function for images.
+                simple = simple_norm(kernel, stretch='linear', power=1, min_cut=-5e-4, max_cut=5e-4)
+
+                # Show the source, target and kernel images.
+                plt.subplot(1,7,1)
+                plt.title('Source: '+band)
+                plt.imshow(source, norm=simple, interpolation='antialiased', origin='lower')
+                plt.subplot(1,7,2)
+                plt.title('Target: '+target_band)
+                plt.imshow(target, norm=simple, interpolation='antialiased', origin='lower')
+                plt.subplot(1,7,3)
+                plt.title('Kernel')
+                plt.imshow(kernel, norm=simple, interpolation='antialiased', origin='lower')
+
+                # Convolve the source with the kernel.
+                filt_psf_conv = convolve_fft(source, kernel)
+
+                # Show convolved PSF.
+                plt.subplot(1,7,4)
+                plt.title("Convolved "+band)
+                plt.imshow(filt_psf_conv, norm=simple, interpolation='antialiased', origin='lower')
+
+                # Show the residual after convolution.
+                plt.subplot(1,7,5)
+                plt.title('Residual')
+                res = filt_psf_conv-target
+                plt.imshow(res, norm=simple, interpolation='antialiased', origin='lower')
+
+                # Show the COGs of convolved and target PSFs and the ratio.
+                plt.subplot(1,7,7)
+                r,pf,pt = self.plot_profile(filt_psf_conv,target, np.arange(1,40,1))
+                plt.plot(r*self.config["PIXEL_SCALE"], pf/pt)
+                plt.ylim(0.95,1.05)
+                plt.xlabel('Radius [arcsec]')
+                plt.ylabel('EE convolved source / EE target')
+
+                plt.subplot(1,7,6)
+                plt.plot(r*self.config["PIXEL_SCALE"],pf,lw=3, label = 'Convolved source')
+                plt.plot(r*self.config["PIXEL_SCALE"],pt,'--',alpha=0.7,lw=3, label = 'Target')
+                plt.xlabel('Radius [arcsec]')
+                plt.ylabel('Enclosed energy')
+                plt.legend()
+                
+                plt.tight_layout()
+                plt.savefig(f'{outdir}/{os.path.basename(self.filenames[band][0]).replace(".fits", f"_match_{target_band}_diagnostic.pdf")}')
+                plt.close()
+
+            # Remove the target PSF file.
+            os.remove(f'{outdir}/target.temp.fits')
         
         return
     
-    def convolve_image(self, error_filename = None, sci_filename = None, use_FFT = True, conv_dir = None):
-        """Convolve an image with the measured matching kernel.
+    def convolve_image(self, target_band, bands = None, parameters = {}, outdir = './'):
+        """
+        Convolve images used to measure PSF with generated matching kernels.
 
-        Parameters
-        ----------
-        error_filename (str):
-            Path to the error image associated with the image that will be convolved.
-        sci_filename (str):
-            Path to the science image to convolve. If None, use the image the PSF was measured from.
-        conv_dir (str)
-            Directory within which to store convolved images. If None, store with unconvolved image.
+        Arguments
+        ---------
+        target_band (str)
+            The target band for convolution. Matching kernels must already be generated.
+        bands (list, None)
+            The bands on which to perform convolution. Will ignore target.
+            If None, use all measured PSFs.
+        parameters (dict)
+            Parameters to update in the config file just for this run.
+        outdir (str)
+            Directory in which to store convolved images.
         """
 
-        # If no science image given, use that used to generate PSF.
-        if sci_filename == None:
-            sci_filename = self.image_filename
-        
-        print(f'Convolving {sci_filename}:')
+        # Check that matching kernels have been generated.
+        if target_band not in self.Kernels.keys():
+            raise KeyError(f'Matching kernels for {target_band} have not been generated. Run generate_kernel first.')
+                
+        # Overwrite some config parameters just for this run.
+        config = copy.deepcopy(self.config)
+        for (key, value) in parameters.items():
+                if key in config:
+                    config[key] = value
+                else:
+                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.', stacklevel=2)
 
-        # Load the science image.
-        sci_dir = self.check_directory(conv_dir, os.path.dirname(sci_filename))
-        sci_matched = f'{sci_dir}/{os.path.basename(sci_filename).removesuffix(".fits")}_match{self.matching_band.lower()}.fits'
-        sci_image, sci_hdr = fits.getdata(sci_filename, header=True)
+        # If no bands indicated, convolve all.
+        if bands == None:
+            bands = self.PSFs.keys()
 
-        # Load the error image.
-        if error_filename != None:
-            err_dir = self.check_directory(conv_dir, os.path.dirname(error_filename))
-            err_matched = f'{err_dir}/{os.path.basename(error_filename).removesuffix(".fits")}_match{self.matching_band.lower()}.fits'
-            err_image, err_hdr = fits.getdata(error_filename, header=True)
+        # For each band.
+        for band, kernel in self.Kernels[target_band].items():
 
-        # Convolve the images.
-        if use_FFT == True:
-            print(' Convolving science image')
-            convolved_sci = convolve_fft(sci_image, self.matching_kernel, allow_huge=True)
-            sci_hdr['FFFT'] = (True, 'Was Fast Fourier Transform used?')
-            if error_filename != None:
-                print(' Convolving error image')
-                convolved_err = convolve_fft(err_image, self.matching_kernel, allow_huge=True)
-                err_hdr['FFFT'] = (True, 'Was Fast Fourier Transform used?')
+            print(f'Matching {band} to {target_band}...')
 
-        else:
-            print(' Convolving science image')
-            convolved_sci = convolve(sci_image, self.matching_kernel)
-            sci_hdr['FFFT'] = (False, 'Was Fast Fourier Transform used?')
-            if error_filename != None:
-                print(' Convolving error image')
-                convolved_err = convolve(err_image, self.matching_kernel)
-                err_hdr['FFFT'] = (False, 'Was Fast Fourier Transform used?')
+            # Load in the science and error images.
+            sci, sci_hdr = fits.getdata(self.filenames[band][0], header = True)
+            err, err_hdr = fits.getdata(self.filenames[band][1], header = True)
 
-        sci_hdr['S_FILTER'] = (self.band, 'Source image filter.')
-        err_hdr['S_FILTER'] = (self.band, 'Source image filter.')
-        sci_hdr['T_FILTER'] = (self.matching_band, 'Matched image filter.')
-        err_hdr['T_FILTER'] = (self.matching_band, 'Matched image filter.')
+            # Convolve the images.
+            if config["FFT"] == True:
+                print(' Convolving science image...')
+                convolved_sci = convolve_fft(sci, kernel, allow_huge=True)
+                convolved_err = convolve_fft(err, kernel, allow_huge=True)
+            else:
+                print(' Convolving error image...')
+                convolved_sci = convolve(sci, kernel)
+                convolved_err = convolve(err, kernel)
 
-        # If weight pixel is zero, set convolved science pixel to zero.
-        if error_filename != None:
-            wht_image = np.where(err_image==0, 0, 1./(err_image**2))
-            convolved_sci[wht_image==0] = 0.0
-            convolved_err[np.isnan(err_image)] = np.nan
-            fits.writeto(err_matched,convolved_err,header=err_hdr,overwrite=True)
+            # Add some header keywords.
+            sci_hdr['FFT'] = (config["FFT"], 'Convolved by Fast Fourier Transform')
+            sci_hdr['KERNEL'] = (target_band, 'Convolved with this kernel')
+            err_hdr['FFT'] = (config["FFT"], 'Convolved by Fast Fourier Transform')
+            err_hdr['KERNEL'] = (target_band, 'Convolved with this kernel')
 
-        # Save the images.
-        fits.writeto(sci_matched,convolved_sci,header=sci_hdr,overwrite=True)
+            # Ensure off detector region values don't change.
+            convolved_sci[np.isnan(err)] = 0
+            convolved_err[np.isnan(err)] = np.nan
 
-        return
-    
-class PSF_Group():
-    """Convinience class for performing PSF measurement, kernel generation and convolution
-        on a group of observations"""
+            # Save the convloved images.
+            fits.writeto(f'{outdir}/{os.path.basename(self.filenames[band][0]).replace(".fits", f"_match{target_band}.fits")}', convolved_sci, sci_hdr, overwrite = True)
+            fits.writeto(f'{outdir}/{os.path.basename(self.filenames[band][1]).replace(".fits", f"_match{target_band}.fits")}', convolved_err, err_hdr, overwrite = True)
 
-    def __init__(self, psf_config):
-        """__init__ method for PSF_Group.
-        
-        Parameters
-        ----------
-        psf_config (str):
-            Path to the '.yml' file containing the configuration parameters.
-        """
-
-        # Just store the config filepath for later.
-        self.config_path = psf_config
-    
-    def measure_psfs(self, image_filenames, filter_codes, psf_dir = None, save_figs = True):
-        """Measure the empirical PSFs for a group of objects.
-        
-        Parameters
-        ----------
-        image_filenames (list):
-            List containing the filepaths to the science images to measure PSFs from.
-        filter_codes (list):
-            List of filter codes corresponding to each science image.
-        psf_dir (str):
-            The directory in which to store outputs. If None, create and store in 'psf_outputs'.
-        save_figs (bool):
-            Whether or not to save diagnostic figures.
-        """
-
-        # List to store all the PSFs.
-        self.PSFs = {}
-        for image_filename, filter_code in zip(image_filenames, filter_codes):
-
-            # Create a PSF object for each image.
-            psf = PSF(image_filename, filter_code, self.config_path)
-
-            # Measure the PSF
-            psf.measure_psf(psf_dir, save_figs)
-
-            # Store
-            self.PSFs[filter_code] = psf
-        
-        return
-
-    def create_matching_kernels(self, target_PSF, kernel_dir = None, save_figs = True):
-        """Create kernels to match all PSFs to a single PSF.
-        
-        Parameters
-        ----------
-        target_psf (str):
-            Filter code corresponding to the target PSF.
-        kernel (str):
-            Directory within which to store kernels. If None, use the previously defined PSF directory.
-        save_figs (bool):
-            Whether or not to save diagnostic figures.
-        """
-
-        # Get the PSF object that all others will be matched to.
-        target = self.PSFs[target_PSF]
-
-        # Iterate all the PSFs. (Including the target)
-        for psf in self.PSFs.values():
-
-            # Create the matching kernel.
-            psf.create_matching_kernel(target, kernel_dir)
-
-        return
-    
-    def convolve_images(self, science_filenames, weight_filenames, use_FFT = True, conv_dir = None):
-        """Convolve images with the matching kernel measured above.
-        
-        Parameters
-        ----------
-        science_filenames (list):
-            List of science images to be convolved.
-        weight_images (list):
-            List of weight images to be convloved.
-        conv_dir (str):
-            Directory within which to store convolved images. If None, store with unconvolved image.
-        """
-
-        # Convolve each image with the corresponding kernel.
-        for i, psf in enumerate(self.PSFs):
-
-            psf.convolve_image(weight_filenames[i], science_filenames[i], use_FFT, conv_dir = conv_dir)
+            print(' Done.')
         
         return
