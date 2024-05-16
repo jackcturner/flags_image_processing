@@ -1,17 +1,39 @@
 import os
 import h5py
-from astropy.table import Table
 import numpy as np
+import matplotlib.pyplot as plt
+
+from astropy.io import fits
+from astropy.table import Table
+from astropy.wcs import WCS
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-from astropy.io import fits
-from astropy.wcs import WCS
+from regions import Regions
+
 import scipy.ndimage as nd
 import scipy.optimize as opt
-import pyregion
 
+from photutils.centroids import centroid_com
+from photutils.aperture import CircularAperture, aperture_photometry
 
-def multiband_catalogue(catalogues, labels, new_catalogue = 'combined_catalogue.hdf5'):
+from skimage.measure import block_reduce
+
+def merge_catalogues(catalogues, labels, new_catalogue = 'merged_catalogue.hdf5'):
+    """
+    Combine multiple hdf5 catalogues produced by SExtractor into a single 
+    catalogue where each catalogue has its own group within the
+    photometry group.
+    
+    Arguments
+    ---------
+    catalogues (List[str])
+        A list of paths to the catalogues to be combined.
+    labels (List[str])
+        List of group names for each catalogue added to the new
+        catalogue.
+    new_catalogue (str)
+        Name of the new catalogue to output.
+    """
 
     # Create the new catalogue and its base photometry group.
     with h5py.File(new_catalogue, 'w') as newcat:
@@ -24,9 +46,10 @@ def multiband_catalogue(catalogues, labels, new_catalogue = 'combined_catalogue.
 
                 # Check for photometry group.
                 if 'photometry' not in cat.keys():
-                    raise KeyError('Catalogue should have base "photometry" group.')
+                    raise KeyError(('Catalogue should have a base "photometry" group.'
+                                    'Was this catalogue produced by FLAGS?'))
                 
-                # Create new group in catalogue to store the data for this band.
+                # Create new group in catalogue to store the data for this catalogue.
                 group = f'photometry/{label}'
                 newcat.create_group(group)
 
@@ -41,198 +64,141 @@ def multiband_catalogue(catalogues, labels, new_catalogue = 'combined_catalogue.
                 for key in cat['photometry'].attrs.keys():
                     newcat[f'{group}'].attrs[key] = cat['photometry'].attrs[key]
     
-    print(f'Created a multiband catalogue and save to {new_catalogue}')
-
-    return
-
-def multifield_catalogue(catalogues, new_catalogue, numbering = None, replace = False):
-    """Combine multiple hdf5 multiband catalogues produced by pyex into a multifield catalogue.
-
-    Parameters
-    ----------
-    catalogues (list):
-        A list of paths to the catalogues to be combined, in pointing number order.
-    new_catalogue (str):
-        Path to the new catalogue.
-    numbering (list):
-        Numbering to use to name pointings. If None, use the position of the catalogue in catalogues.
-    replace (bool):
-        Whether to remove the individual field catalogues.
-    """
-
-    # Create the new catalogue.
-    with h5py.File(new_catalogue, 'a') as new_cat: 
-
-        # Iterate over the multiband catalogues.
-        for catalogue in catalogues:
-            with h5py.File(catalogue, 'r+') as cat:
-
-                cat_group = cat['photometry']
-
-                # Create a dataset indicating the source pointing.
-                if numbering == None:
-                    cat_group['FIELD'] = [catalogues.index(catalogue)+1]*len(cat[f'photometry/{list(cat["photometry"].keys())[0]}'])
-                else:
-                    cat_group['FIELD'] = [numbering[catalogues.index(catalogue)]]*len(cat[f'photometry/{list(cat["photometry"].keys())[0]}'])
-                
-                # Create the photometry group in the new catalogue.
-                if 'photometry' in new_cat:
-                    new_cat_group = new_cat['photometry']
-                else:
-                    new_cat_group = new_cat.create_group('photometry')
-
-                # Iterate over datasets within the group
-                for dataset_name, dataset in cat_group.items():
-                    cat_data = dataset[()]
-
-                    # If the dataset already exists in the destination group, concatenate it
-                    if dataset_name in new_cat_group:
-                        new_cat_dataset = new_cat_group[dataset_name]
-                        new_cat_data = new_cat_dataset[()]  # Read the data from the destination dataset
-                        combined_data = np.concatenate((new_cat_data, cat_data))
-                        
-                        # Delete the existing dataset and create a new one with the combined data
-                        del new_cat_group[dataset_name]
-                        new_cat_group.create_dataset(dataset_name, data=combined_data)
-
-                    # If the dataset doesn't exist in the destination group, create it
-                    else:
-                        new_cat_group.create_dataset(dataset_name, data=cat_data)
-
-                # Remove the field group from the orginal catalogue.
-                del cat_group['FIELD']
-
-                # Remove the orginal catalogue if required.
-                if replace == True:
-                    os.remove(catalogue)
+    print(f'Merged {len(catalogues)} and saved to {new_catalogue}')
 
     return
 
 def weight_to_error(weight_image, error_filename = None):
-    """Convert a weight image to an error map.
+    """
+    Convert a weight image to an error map.
 
-    Parameters
-    ----------
-    weight_image (str):
-        Path to the weight image to convert.
-    error_filename (str):
-        Name of the error image to output. If None, append "to_error" to weight filename.
+    Arguments
+    ---------
+    weight_image (str)
+        Path to the weight fits image to convert.
+    error_filename (None, str):
+        Name of the error fits image to output.
+        If None, append "_to_err" to weight filename.
     """
 
     # Load the weight image and header.
-    wht, hdr = fits.open(weight_image, header = True)
+    wht, hdr = fits.getdata(weight_image, header = True)
 
     # Convert the weight image to error map.
-    err = np.where(wht==0, 0, 1/np.sqrt(wht))
+    err = np.where(wht==0, np.nan, 1/np.sqrt(wht))
 
     # If no name for new file given, use weight filename as base.
     if error_filename == None:
-        error_filename = f'{weight_image.remove(".fits")}_to_error.fits'
+        error_filename = f'{weight_image.remove(".fits")}_to_err.fits'
 
     # Add header keyword to indicate how the error map was generated.
-    hdr['CONVERTED'] = ('T', 'Converted to error image from weight image.')
+    hdr['FROMWHT'] = ('T', 'Converted to RMS from weight.')
 
     # Save the error image to a new file.
-    fits.writeto(err,error_filename,header=hdr,overwrite=True)
+    fits.writeto(error_filename,err,header=hdr,overwrite=True)
 
     return
 
-def create_stack(sci_images, wht_images, stack_name = 'pyex_stacked'):
-    """Create a stacked image for detection.
+def error_to_weight(error_image, weight_filename = None):
+    """
+    Convert an error image to an weight map.
 
-    Parameters
-    ----------
-    sci_images (list):
-        A list of science image file paths to stack.
-    wht_images (list):
-        A list of corresponding weight image file paths.
-    stack_name (str):
-        Filename of the output stacked image.
-
-    The header used in the final images will be taken from the first image in the corresponding list.
+    Arguments
+    ---------
+    error_image (str)
+        Path to the error fits image to convert.
+    weight_filename (None, str)
+        Name of the weight fits image to output.
+        If None, append "_to_wht" to error filename.
     """
 
-    if len(sci_images) != len(wht_images):
-        raise ValueError('The number of science and weight images must be equal.')
+    # Load the error image and header.
+    err, hdr = fits.getdata(error_image, header = True)
 
-    # Get the image size and headers from the first image.
-    first_image, sci_hdr = fits.getdata(sci_images[0], header=True)
-    wht_hdr = fits.getheader(wht_images[0])
+    # Convert the error image to a weight map.
+    wht = np.where(np.isnan(err), 0, 1/(err**2))
 
-    shape = first_image.data.shape
-    stack_sci = np.zeros(shape)
-    stack_wht = np.zeros(shape)
+    # If no name for new file given, use error filename as base.
+    if weight_filename == None:
+        weight_filename = f'{error_image.remove(".fits")}_to_wht.fits'
 
-    # Stack the images. 
-    for sci, wht in zip(sci_images, wht_images):
-        wht_ = fits.getdata(wht)
-        stack_sci += fits.getdata(sci) * wht_
-        stack_wht += wht_
+    # Add header keyword to indicate how the weight map was generated.
+    hdr['FROMERR'] = ('T', 'Converted to weight from RMS.')
 
-    stack_sci /= stack_wht
-
-    # Save the images.
-    fits.writeto(f'{stack_name}_sci.fits', stack_sci, header = sci_hdr, overwrite=True)
-    fits.writeto(f'{stack_name}_wht.fits', stack_wht, header = wht_hdr, overwrite=True)
+    # Save the weight image to a new file.
+    fits.writeto(weight_filename,wht,header=hdr,overwrite=True)
 
     return
 
-def generate_error(science, weight, exposure, outname = None):
-    """Generate an error image from a science, weight and exposure image.
+def generate_error(science, weight, exposure, grow = True, outname = None):
+    """
+    Generate an error map including Poisson noise from science, weight
+    and exposure images. See:
+    https://dawn-cph.github.io/dja/blog/2023/07/18/image-data-products/
 
-    Parameters
-    ----------
-    science (str):
-        Path to the science image.
-    weights (str):
-        Path to the weight image.
+    Arguments
+    ---------
+    science (str)
+        Path to the science fits image.
+    weights (str)
+        Path to the weight fits image.
     exposure (str):
-        Path to the exposure time map.
-    outname (str/None):
-        Output filename of the generated error image. If none use default.
+        Path to the exposure fits image.
+    grow (bool)
+        Is the exposure image downsampled by a factor 4. (For DJA images)
+    outname (None, str):
+        Output filename of the generated error fits image.
+        If none, append "_err" to science filename.
     """
 
+    # Set output filename.
     if outname == None:
         outname = f'{science.remove_suffix(".fits")}_err.fits'
 
+    # Load in each image.
     sci = fits.getdata(science)
     exp, exp_header = fits.getdata(exposure, header = True)
     wht, wht_header = fits.getdata(weight, header = True)
 
-    # Grow the exposure map to the original frame
-    full_exp = np.zeros(sci.shape, dtype=int)
-    full_exp[2::4,2::4] += exp*1
-    full_exp = nd.maximum_filter(full_exp, 4)
+    # Grow the exposure map to the original frame if required.
+    if grow == True:
+        full_exp = np.zeros(sci.shape, dtype=int)
+        full_exp[2::4,2::4] += exp*1
+        full_exp = nd.maximum_filter(full_exp, 4)
 
-    # Multiplicative factors that have been applied since the original count-rate images
+    # Determine multiplicative factors that have been applied since the
+    # original count-rate images.
+
     phot_scale = 1.
 
     for k in ['PHOTMJSR','PHOTSCAL']:
         print(f'{k} {exp_header[k]:.3f}')
         phot_scale /= exp_header[k]
 
-    # Unit and pixel area scale factors
+    # Unit and pixel area scale factors.
     if 'OPHOTFNU' in exp_header:
         phot_scale *= exp_header['PHOTFNU'] / exp_header['OPHOTFNU']
 
-    # "effective_gain" = electrons per DN of the mosaic
+    # Electrons per DN of the mosaic.
     effective_gain = (phot_scale * full_exp)
 
-    # Poisson variance in mosaic DN
+    # Poisson variance in mosaic DN.
     var_poisson_dn = np.maximum(sci, 0) / effective_gain
 
-    # Original variance from the `wht` image = RNOISE + BACKGROUND
+    # Original variance from the weight image.
     var_wht = 1/wht
 
-    # New total variance
+    # New total variance.
     var_total = var_wht + var_poisson_dn
     full_wht = 1 / var_total
 
-    # Null weights
+    # Null weights.
     full_wht[var_total <= 0] = 0
 
+    # Convert the full weight image to an error map
     err = np.where(full_wht==0, 0, 1/np.sqrt(full_wht))
 
+    # and save to a fits image.
     fits.writeto(outname, err, header = wht_header)
 
     return
@@ -241,17 +207,19 @@ def pc2cd(hdr, key=' '):
     """
     Convert a PC matrix to a CD matrix.
 
-    WCSLIB (and PyWCS) recognizes CD keywords as input
-    but converts them and works internally with the PC matrix.
-    to_header() returns the PC matrix even if the input was a
-    CD matrix. To keep input and output consistent we check
-    for has_cd and convert the PC back to CD.
+    Arguments
+    ---------
+    hdr (astropy.io.fits.Header)
+        Astropy header containing PC matrix to be converted.
+    key (str)
+        Additional key attached to the PC keywords.
 
-    Parameters
-    ----------
-    hdr: `astropy.io.fits.Header`
-
+    Returns
+    -------
+    hdr (astropy.io.fits.Header)
+        Astropy table including generated CD matrix.
     """
+
     key = key.strip()
     cdelt1 = hdr.pop(f'CDELT1{key:.1s}', 1)
     cdelt2 = hdr.pop(f'CDELT2{key:.1s}', 1)
@@ -266,52 +234,52 @@ def pc2cd(hdr, key=' '):
     return hdr
 
 def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname = None):
+    """
+    Rebin an image to a lower resolution pixel scale by combining pixels.
+    
+    Arguments
+    ---------
+    input_fits (str)
+        Filename of the fits image to be rebinned.
+    source_scale (float)
+        The pixel scale of the input image in arcseconds.
+    target_scale (float)
+        The desired output pixel scale in arcseconds.
+    method (str)
+        The method to use when combining pixels.
+        Either 'sum' for linear or 'quad' for quadratic.
+    outname (None, str)
+        Filename of the rebinned image.
+        If None, append "_rebinned" to input filename.
+    """
 
     print(f'Rebinning {input_fits}...')
+
+    # Set the output filename.
     if outname == None:
         outname = f'{input_fits.removesuffix(".fits")}_rebinned.fits'
 
     # Read the FITS file
     with fits.open(input_fits) as hdul:
-        img_array = hdul[0].data
-        wcs = WCS(hdul[0].header)
+        img = hdul[1].data
+        wcs = WCS(hdul[1].header)
 
     # Calculate the scale factor for resizing
-    scale_factor = source_scale / target_scale
-
-    # Calculate the new dimensions for the rebinned image
-    new_height = int(img_array.shape[0] * scale_factor)
-    new_width = int(img_array.shape[1] * scale_factor)
-
-    # Initialize an empty array for the rebinned image
-    rebinned_image = np.zeros((new_height, new_width), dtype=np.float32)
+    scale_factor = int(target_scale/source_scale)
 
     # Create a new WCS for the rebinned image
-    wcs_rebinned = wcs.slice((np.s_[:None:int(1/scale_factor)], np.s_[:None:int(1/scale_factor)]))
+    wcs_rebinned = wcs.slice((np.s_[:None:int(scale_factor)], np.s_[:None:int(scale_factor)]))
     wcs_header = wcs_rebinned.to_header()
     pc2cd(wcs_header)
 
-    # Iterate over groups of pixels and average them to get the rebinned value
-    for i in range(new_height):
-        for j in range(new_width):
-            # Calculate the corresponding region in the original image
-            start_i = int(i / scale_factor)
-            end_i = int((i + 1) / scale_factor)
-            start_j = int(j / scale_factor)
-            end_j = int((j + 1) / scale_factor)
+    # Define the block size for rebinning.
+    block_size = (scale_factor, scale_factor)
 
-            # Extract the region from the original image
-            region = img_array[start_i:end_i, start_j:end_j]
-
-            # Take the average value of the region
-            if method == 'sum':
-                rebinned_value = np.sum(region)
-            # or sum in quadrature.
-            if method == 'quad':
-                rebinned_value = np.sqrt(sum([val*val for val in region.flatten()]))
-
-            # Assign the rebinned value to the new image
-            rebinned_image[i, j] = rebinned_value
+    # Rebin the image.
+    if method == 'sum':
+        rebinned_image = block_reduce(img, block_size, np.sum)
+    if method == 'quad':
+        rebinned_image = np.sqrt(block_reduce(img**2, block_size, np.sum))
 
     # Save the rebinned image as a new FITS file with updated WCS information
     hdu = fits.PrimaryHDU(rebinned_image)
@@ -324,87 +292,213 @@ def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname 
 
     return
 
-def flag_stars(catalogue, PSF_FWHM, efficiency = 0.15, mag_limit = 26.5, min_bands = 2, mag_name = 'MAG_AUTO', fwhm_name = 'FWHM_WORLD'):
+def create_stack(sci_images, wht_images, hdr_index = 0, stack_name = 'stacked_image.fits'):
+    """Create a variance weighted stacked image for source detection.
 
-    with h5py.File(catalogue, 'r+') as f:
-
-        # Get list of instruments.
-        instruments = list(f['photometry'].keys())
-        # Remove the detection image.
-        if 'detection' in instruments:
-            instruments.remove('detection')
-
-
-        # Get list of filters.
-        bands = []
-        for instrument in instruments:
-            bands_ = list(f[f'photometry/{instrument}'].keys())
-            for i in bands_:
-                bands_[bands_.index(i)] = f'{instrument}/{i}'
-            bands += bands_
-        
-        print(bands)
-
-        stars = []
-        for band in bands:
-            mag = f[f'photometry/{band}/{mag_name}'][:]
-            fwhm = f[f'photometry/{band}/{fwhm_name}'][:] * 3600 # Converting to arcseconds.
-
-            # Spurious sources also have FWHM less than that of PSF.
-            below_psf = (fwhm < PSF_FWHM)
-
-            # Selection region for stars.
-            s = ~below_psf & (fwhm< PSF_FWHM * (1 + efficiency)) & (mag < mag_limit)
-
-            # Create selection array for stars.
-            if type(stars) == list:
-                stars = s.astype(int)
-            else:
-                stars += s.astype(int)
-        
-        # Only select stars identified as such in the required number of bands.
-        selection = stars >= min_bands
-        print(f'Identified {sum(selection)} stars.')
-
-        # Add a star flag to the catalogue.
-        for band in bands:
-            f[f'photometry/{band}/STAR'] = selection
-        f['photometry/detection/STAR'] = selection
-
-        return
-    
-def twoD_GaussianScaledAmp(coord, xo, yo, sigma_x, sigma_y, amplitude, offset):
-    """Function to fit, returns 2D gaussian function as 1D array"""
-    xo = float(xo)
-    yo = float(yo)    
-    g = offset + amplitude*np.exp( - (((coord[0]-xo)**2)/(2*sigma_x**2) + ((coord[1]-yo)**2)/(2*sigma_y**2)))
-    return g.ravel()
-
-def get_PSF_FWHM(psf_path):
-    """Get FWHM(x,y) of a blob by 2D gaussian fitting
-    Parameter:
-        img - image as numpy array
-    Returns: 
-        FWHMs in pixels, along x and y axes.
+    Arguments
+    ---------
+    sci_images (List[str])
+        Filenames of science images to stack.
+    wht_images (List[str])
+        Filenames of the corresponding weight images.
+    hdr_index (int)
+        Index into sci_images. Use the header from this element in the
+        final image.
+    stack_name (str)
+        Filename of the output stacked image.
+        Suffixes _sci and _wht will be added before the fits extension.
     """
 
+    if len(sci_images) != len(wht_images):
+        raise KeyError('The number of science and weight images must be equal.')
+
+    # Get the image size and headers from the first image.
+    img, sci_hdr = fits.getdata(sci_images[hdr_index], header=True)
+    wht_hdr = fits.getheader(wht_images[hdr_index])
+
+    shape = img.data.shape
+    stack_sci = np.zeros(shape)
+    stack_wht = np.zeros(shape)
+
+    # Stack the images. 
+    for sci, wht in zip(sci_images, wht_images):
+        wht_ = fits.getdata(wht)
+        stack_sci += fits.getdata(sci) * wht_
+        stack_wht += wht_
+
+    stack_sci /= stack_wht
+
+    # Save the images.
+    fits.writeto({stack_name.replace('.fits', '_sci.fits')}, stack_sci, header = sci_hdr, overwrite=True)
+    fits.writeto({stack_name.replace('.fits', '_wht.fits')}, stack_wht, header = wht_hdr, overwrite=True)
+
+    return
+
+def Gaussian_2D(coord, xo, yo, sigma_x, sigma_y, amplitude, offset):
+    """
+    2D Gaussian fitting function.
+    
+    Arguments
+    ---------
+    coord (List[float])
+        The x,y coordinate at which to evaluate the Gaussian.
+    xo (float)
+        The x-coordinate of the centre.
+    yo (float)
+        The y-coordinate of the centre.
+    sigma_x (float)
+        Standard deviation in the x direction in pixels.
+    sigma_y (float)
+        Standard deviation in the y direction in pixels.
+    amplitude (float)
+        Amplitude of the gaussian.
+    offset (float)
+        Offset to apply to the Gaussian values.
+
+    Returns
+    -------
+    flat_gaussian (numpy.ndarray)
+        1D flattened Gaussian distribution.
+    """
+
+    gaussian = offset + amplitude*np.exp( - (((coord[0]-float(xo))**2)/(2*sigma_x**2)
+                                             + ((coord[1]-float(yo))**2)/(2*sigma_y**2)))
+
+    flat_gaussian = gaussian.ravel()
+
+    return flat_gaussian
+
+def get_PSF_FWHM(psf_path):
+    """
+    Get FWHM of a PSF in x and y directions using Gaussian fitting.
+
+    Arguments
+    ---------
+    psf_path (str)
+        Filename of fits image PSF.
+
+    Returns
+    -------
+    fwhm (List[float])
+        Measured FWHM in x and y directions.
+    """
+
+    # Read the PSF array from the fits file.
     img = fits.getdata(psf_path)
 
+    # Create an x and y grid.
     x = np.linspace(0, img.shape[1], img.shape[1])
     y = np.linspace(0, img.shape[0], img.shape[0])
     x, y = np.meshgrid(x, y)
-    #Parameters: xpos, ypos, sigmaX, sigmaY, amp, baseline
+    
+    # Some parameter inital guesses
     initial_guess = [img.shape[1]/2,img.shape[0]/2,10,10,1,0]
-    # subtract background and rescale image into [0,1], with floor clipping
 
-    popt, pcov = opt.curve_fit(twoD_GaussianScaledAmp, (x, y), 
+    # Fit with a Gaussian model.
+    popt, pcov = opt.curve_fit(Gaussian_2D, (x, y), 
                                img.ravel(), p0 = initial_guess)
     xcenter, ycenter, sigmaX, sigmaY, amp, offset = popt[0], popt[1], popt[2], popt[3], popt[4], popt[5]
+
+    # Convert the standard deviations to FWHM.
     FWHM_x = np.abs(4*sigmaX*np.sqrt(-0.5*np.log(0.5)))
     FWHM_y = np.abs(4*sigmaY*np.sqrt(-0.5*np.log(0.5)))
-    return (FWHM_x, FWHM_y)
 
-def flag_stars(catalogue, PSF_FWHM, efficiency = 0.15, mag_limit = 26.5, min_bands = 2, mag_name = 'MAG_AUTO', fwhm_name = 'FWHM_WORLD'):
+    fwhm = [FWHM_x, FWHM_y]
+
+    return fwhm
+
+def measure_curve_of_growth(image, radii, position=None, norm=True, show=False):
+    """
+    Measure the Curve Of Growth of an image based on provided radii.
+    
+    Arguments
+    ---------
+    image (numpy.ndarray)
+        The 2D image from which to measure the COG.
+    radii (List[float])
+        The radii in pixels at which to measure the enclosed flux.
+    position (None, list[float]) 
+        The x,y position of the source centre. If None, measure from 
+        moments.
+    norm (bool)
+        Should the COG be normalised by its maximum value?
+    show (bool)
+        Should the measured COG be plotted and displayed?
+
+    Returns
+    -------
+    radii (List[float])
+        The radii at which the enclosed energy was measured.
+    cog (numpy.ndarray)
+        The value of the COG at each radius.
+    profile (numpy.ndarray)
+        The value of the profile at each radius.
+    """
+
+    # Calculate the centroid of the source.
+    if type(position) == type(None):
+        position = centroid_com(image)
+
+    # Create an aperture for each radius in radii.
+    apertures = [CircularAperture(position, r = r) for r in radii]
+
+    # Perform aperture photometry for each aperture.
+    phot_table = aperture_photometry(image, apertures)
+
+    # Calculate cumulative aperture fluxes
+    cog = np.array([phot_table['aperture_sum_'+str(i)][0] for i in range(len(radii))])
+
+    # Normalise by the maximum COG value.
+    if norm == True:
+        cog /= max(cog)
+
+    # Get the profile.
+
+    # Area enclosed by each apperture.
+    area = np.pi*radii**2 
+    # Difference between areas.
+    area_cog = np.insert(np.diff(area),0,area[0])
+    # Difference between COG elements.
+    profile = np.insert(np.diff(cog),0,cog[0])/area_cog 
+    # Normalise profile.
+    profile /= profile.max()
+
+    # Show the COG and profile if requested.
+    if show:
+        plt.grid(visible = True, alpha = 0.1)
+        plt.xlabel('Radius')
+        plt.ylabel('Enclosed')
+        plt.scatter(radii, cog, s = 25, alpha = 0.7)
+        plt.plot(radii,profile/profile.max())
+
+    # Return the aperture radii, COG and profile.
+    return radii, cog, profile
+
+def flag_stars(catalogue, PSF_FWHM, efficiency=0.15, mag_limit=26.5, min_bands=2,
+               mag_name='MAG_AUTO', fwhm_name='FWHM_WORLD', flag_name = 'STAR'):
+    """
+    Identify a flag stars based on SExtractor measurements and the 
+    FWHM of the PSF.
+    
+    Arguments
+    ---------
+    catalogue (str)
+        Path to hdf5 catalogue file produced by FLAGS.
+    PSF_FWHM (float)
+        FWHM of the image PSF this catalogue was determined from.
+    efficiency (float)
+        The efficiency of star identification.
+    mag_limit (float)
+        Stars must be brighter than this limit.
+    min_bands (int)
+        Objects must be identified as stars in this many bands.
+    mag_name (str)
+        Name of the magnitude dataset.
+    fwhm_name (str)
+        Name of the FWHM dataset.
+    flag_name (str)
+        Name of the star flag dataset to create.
+    """
 
     with h5py.File(catalogue, 'r+') as f:
 
@@ -445,95 +539,260 @@ def flag_stars(catalogue, PSF_FWHM, efficiency = 0.15, mag_limit = 26.5, min_ban
         print(f'Identified {sum(selection)} stars.')
 
         # Add a star flag to the catalogue.
-        if 'STAR' in f['photometry/detection'].keys():
-            del f['photometry/detection/STAR']
-        f['photometry/detection/STAR'] = selection
+        if flag_name in f['photometry/detection'].keys():
+            del f[f'photometry/detection/{flag_name}']
+        f[f'photometry/detection/{flag_name}'] = selection
 
         return
 
-def flag_mask(catalogue, detection, regions, X_name = 'X_IMAGE', Y_name = 'Y_IMAGE'):
+def match_gaia_sources(catalogue, bands, gaia_catalogue, tolerance, ra_name='ALPHA_SKY',
+                       dec_name='DELTA_SKY'):
+    """
+    Match and flag sources in a FLAGS catalogue to those in a GAIA
+    star catalogue
+    
+    Arguments
+    ---------
+    catalogue (str)
+        Filename of FLAGS hdf5 catalogue.
+    bands (List[str])
+        List containing the catalogue groups to match.
+    gaia_catalogue (str)
+        Filename of the fits GAIA star catalogue.
+    tolerance (float)
+        The matching tolerance in arcseconds.
+    ra_name (str):
+        Name of the RA dataset in the catalogue.
+    dec_name (str)
+        Name of the DEC dataset in the catalogue.
+    """
 
-    # Open the regions.
-    r = pyregion.open(regions)
+    # Calculate the matching tolerance in arcseconds.
+    arcsec_tolerance = tolerance*u.arcsec
 
-    # Use detection image header for WCS information.
-    hdul = fits.open(detection)
-    mask = r.get_mask(hdul[0])
-    hdul.close()
+    # Load the GAIA catalogue and get source positions.
+    gaia_cat = Table.read(gaia_catalogue)
+    gaia_coord = SkyCoord(ra=np.array(gaia_cat['ra'])*u.degree,
+                          dec=np.array(gaia_cat['dec'])*u.degree)
 
-    # Open the catalogue.
-    with h5py.File(catalogue, 'r+') as f:
+    # For each band requested.
+    with h5py.File(catalogue, 'r+') as cat:
 
-        # Round object centres to the nearest pixel.
-        xcen = np.round(f[f'photometry/detection/{X_name}'][:])
-        ycen = np.round(f[f'photometry/detection/{Y_name}'][:])
+        for band in bands:
 
-        flag = []
+            # Arrays for storing the star quasar and parallax flags.
+            star_flag = np.zeros(len(cat[f'photometry/{band}/{ra_name}'][:]))
+            quasar_flag = np.zeros(len(cat[f'photometry/{band}/{ra_name}'][:]))
+            p_flag = np.zeros(len(cat[f'photometry/{band}/{ra_name}'][:]))
 
-        # If the centre of an object is within a masked region, flag it.
-        for x, y in zip(xcen, ycen):
-            if mask[int(y), int(x)] == True:
-                flag.append(1)
-            else:
-                flag.append(0)
+            # Get the positions of the sources.
+            cat_coord = SkyCoord(ra=cat[f'photometry/{band}/{ra_name}'][:]*u.degree,
+                                 dec=cat[f'photometry/{band}/{dec_name}'][:]*u.degree)
 
-        # Add the flag to catalogue, remvoing any previous iteration.
-        if 'MASKED' in f['photometry/detection'].keys():
-            del f['photometry/detection/MASKED']
-        f['photometry/detection/MASKED'] = flag
+            # Find the source closest to each gaia source.
+            idx, d2d, d3d = gaia_coord.match_to_catalog_sky(cat_coord)
+            d2d = d2d.to('arcsec')
+
+            # Only accept matches within the given tolerance.
+            s = (d2d < arcsec_tolerance)
+
+            # Add the parallax measurement/error, star and quasar classification to the catalogue.
+            for index, class_s in zip(idx[s], gaia_cat['classprob_dsc_combmod_star'][s]):
+                star_flag[index] = class_s
+            for index, class_q in zip(idx[s], gaia_cat['classprob_dsc_combmod_quasar'][s]):
+                quasar_flag[index] = class_q
+            for index, p_over_e in zip(idx[s], gaia_cat['parallax_over_error'][s]):
+                p_flag[index] = p_over_e
+
+            # Add the flag array.
+            if 'GAIA_STAR' in cat[f'photometry/{band}'].keys():
+                del cat[f'photometry/{band}/GAIA_STAR']
+            cat[f'photometry/{band}/GAIA_STAR'] = star_flag
+
+            if 'GAIA_QUASAR' in cat[f'photometry/{band}'].keys():
+                del cat[f'photometry/{band}/GAIA_QUASAR']
+            cat[f'photometry/{band}/GAIA_QUASAR'] = quasar_flag
+
+            if 'GAIA_POE' in cat[f'photometry/{band}'].keys():
+                del cat[f'photometry/{band}/GAIA_POE']
+            cat[f'photometry/{band}/GAIA_POE'] = p_flag
+    
+    return
+
+def regions_to_mask(image, regions, outname = None):
+    """
+    Convert a DS9 region file to an image mask.
+    
+    Arguments
+    ---------
+    image (str)
+        Filename of fits image to be masked.
+    regions (str)
+        Path to DS9 ".reg" file containing the masking regions.
+    outname (None, str)
+        Output name for the generated mask.
+        If None, append "_mask" to image name.
+    """
+
+    # Set the output name.
+    if outname == None:
+        outname = image.replace(".fits", "_mask.fits")
+
+    # Extract the WCS information from the image being masked
+    img, hdr = fits.getdata(image, header=True)
+    wcs = WCS(hdr)
+
+    # and read the region file.
+    regions = Regions.read(regions, format='ds9')
+
+    # Use WCS to convert regions to pixel coordinates.
+    pixcoords = [scoord.to_pixel(wcs) for scoord in regions]
+    combined_region = pixcoords[0]
+
+    # Create one unified region and convert it to a mask.
+    for region in pixcoords[1:]:
+        combined_region = combined_region.union(region)
+
+    mask = combined_region.to_mask()
+    mask = mask.to_image(shape = img.shape)
+
+    # Save as a fits file.
+    fits.writeto(outname, mask, hdr)
 
     return
 
-def flag_edges(catalogue, detection, border_size = 10, X_name = 'X_IMAGE', Y_name = 'Y_IMAGE'):
+def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels=50,
+                     outname='combined_edge_mask.fits'):
+    """
+    Use binaray hole filling and sobel filters to identify and mask
+    image edges and merge multiple mask into a single combined mask.
+    
+    Arguments
+    ---------
+    images (str, List[str])
+        The image(s) tfor which to create the edge mask.
+    off_image (float)
+        The value indicating an off detector region.
+    buffer_size (int)
+        The width of buffer around the image array edge within which to 
+        ignore edges. 
+    threshold (float)
+        Threshold for edge identification.
+    n_pixels (int)
+        Number of  pixels to use when dilating the edge mask.
+    outname (str)
+        Filename for the saved edge mask.
 
-    # Load the detection image.
-    image_data = fits.getdata(detection)
+    Returns
+    -------
+    combined_mask (numpy.ndarray)
+        2D array where True indicates an edge in one of the 
+        provided images.
+    """
 
-    # Get pixels within the specified distance from the edge
-    valid_mask = ~np.isnan(image_data)
-    distance_transform = np.ones_like(image_data) * np.inf
+    # Convert string to list if required.
+    if type(images) == str:
+        images = [images]
 
-    for i in range(-border_size, border_size + 1):
-        for j in range(-border_size, border_size + 1):
-            if i**2 + j**2 <= border_size**2:
-                shifted = np.roll(np.roll(valid_mask, i, axis=0), j, axis=1)
-                distance_transform = np.minimum(distance_transform, shifted)
+    masks = []
+    for image in images:
 
-    pixels_near_edge = np.where(distance_transform)
+        print(f'Finding edges in {image}...')
 
-    selected_coordinates = tuple(zip(pixels_near_edge[0], pixels_near_edge[1]))
+        sci , hdr = fits.getdata(image, header=True)
 
-    # Create a mask based on the selected coordinates
-    mask = np.zeros(image_data.shape, dtype=bool)
-    mask[tuple(zip(*selected_coordinates))] = True
+        # Fill any holes that may be identified as edges.
+        data = nd.binary_fill_holes(sci)
 
-    # Open the catalogue.
+        # Identify off-image regions
+        off_image_mask = (data == off_image)
+
+        # Do not create a mask if the edge identified is with this many
+        # pixels of the image edge.
+        # Can create spurious masks if not set.
+        buffer_mask = np.zeros_like(data, dtype=bool)
+        buffer_mask[:buffer_size, :] = True  # Top buffer
+        buffer_mask[-buffer_size:, :] = True  # Bottom buffer
+        buffer_mask[:, :buffer_size] = True  # Left buffer
+        buffer_mask[:, -buffer_size:] = True  # Right buffer
+
+        # Detect the edges.
+        edges_x = nd.sobel(data, axis=0)
+        edges_y = nd.sobel(data, axis=1)
+        edges = np.sqrt(edges_x**2 + edges_y**2)
+
+        # Reequire a minimum threshold.
+        edge_mask = edges > threshold
+
+        # Combine off-image mask and dilated edge mask
+        comb_mask = np.logical_and(off_image_mask, edge_mask)
+        # Exclude buffer zone from masking
+        comb_mask[buffer_mask] = False  
+
+        # Dilate the edge mask
+        final_mask = nd.binary_dilation(comb_mask, iterations=n_pixels) 
+
+        masks.append(final_mask)
+    
+    # Merge masks if required.
+    if len(masks) > 1:
+        print('Merging...')
+        combined_mask = np.zeros_like(masks[0], dtype=bool)
+        for mask in masks:
+            combined_mask = np.logical_or(combined_mask, mask)
+    else:
+        combined_mask = masks[0]
+    combined_mask = combined_mask.astype(np.uint8)
+
+    hdr = fits.getheader(images[0])
+    fits.writeto(outname, combined_mask, hdr)
+
+    return combined_mask
+
+def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_IMAGE'):
+    """Flag sources with centres within a masked region.
+
+    WARNING: Assumes SExtractor coordinates so X -> Y, Y -> X.
+        Can be overwritten be specifying X_name, Y_name accordingly.
+    
+    Arguments
+    ---------
+    catalogue (str)
+        Filename of hdf5 catalogue with sources to be masked.
+    mask (str)
+        Filename fits image mask.
+    bands (List[str])
+        List of photometry sub groups to be considered.
+    label (str)
+        Name to use for the flag dataset.
+    X_name (str)
+        Name of the X coordinate dataset.
+    Y_name (str)
+        Name of the Y coordinate dataset.
+    """
+
+    # Read in the catalogue.
     with h5py.File(catalogue, 'r+') as f:
 
-        # Round object centres to the nearest pixel.
-        xcen = np.round(f[f'photometry/detection/{X_name}'][:])
-        ycen = np.round(f[f'photometry/detection/{Y_name}'][:])
+        # For each band.
+        for band in bands:
 
-        flag = []
+            # Round object centres to the nearest pixel.
+            xcen = np.round(f[f'photometry/{band}/{X_name}'][:])
+            ycen = np.round(f[f'photometry/{band}/{Y_name}'][:])
 
-        # If the centre of an object is within the edge region, flag it.
-        for x, y in zip(xcen, ycen):
-            if mask[int(y), int(x)] == True:
-                flag.append(0)
-            else:
-                flag.append(1)
+            flag = []
 
-        # Add the flag to catalogue, remvoing any previous iteration.
-        if 'EDGE' in f['photometry/detection'].keys():
-            del f['photometry/detection/EDGE']
-        f['photometry/detection/EDGE'] = flag
+            # If the centre of an object is within the edge region, flag it.
+            for x, y in zip(xcen, ycen):
+                if mask[int(y), int(x)] == True:
+                    flag.append(1)
+                else:
+                    flag.append(0)
+
+            # Add the flag to catalogue, remvoing any previous iteration.
+            if label in f[f'photometry/{band}'].keys():
+                del f[f'photometry/{band}/{label}']
+            f[f'photometry/{band}/{label}'] = flag
 
     return
-
-
-
-
-
-
-
-
