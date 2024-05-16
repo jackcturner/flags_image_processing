@@ -32,6 +32,10 @@ warnings.filterwarnings('ignore', category = UserWarning, append = True)
 np.errstate(invalid = 'ignore')
 
 class PSF():
+    """
+    Perfrom empirical PSF measurement, matching kernel generation and
+    image convolution on a group of images.
+    """
 
     def __init__(self, config_filename):
         """
