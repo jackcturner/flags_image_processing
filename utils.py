@@ -18,16 +18,20 @@ from photutils.aperture import CircularAperture, aperture_photometry
 
 from skimage.measure import block_reduce
 
-def multiband_catalogue(catalogues, labels, new_catalogue = 'combined_catalogue.hdf5'):
-    """Combine multiple hdf5 catalogues produced by SExtractor into a single catalogue
+def merge_catalogues(catalogues, labels, new_catalogue = 'merged_catalogue.hdf5'):
+    """
+    Combine multiple hdf5 catalogues produced by SExtractor into a single 
+    catalogue where each catalogue has its own group within the
+    photometry group.
     
     Arguments
     ---------
-    catalogues (list):
+    catalogues (List[str])
         A list of paths to the catalogues to be combined.
-    labels (list):
-        List of group names for each band added to the new catalogue.
-    new_catalogue (str):
+    labels (List[str])
+        List of group names for each catalogue added to the new
+        catalogue.
+    new_catalogue (str)
         Name of the new catalogue to output.
     """
 
@@ -42,9 +46,10 @@ def multiband_catalogue(catalogues, labels, new_catalogue = 'combined_catalogue.
 
                 # Check for photometry group.
                 if 'photometry' not in cat.keys():
-                    raise KeyError('Catalogue should have base "photometry" group.')
+                    raise KeyError(('Catalogue should have a base "photometry" group.'
+                                    'Was this catalogue produced by FLAGS?'))
                 
-                # Create new group in catalogue to store the data for this band.
+                # Create new group in catalogue to store the data for this catalogue.
                 group = f'photometry/{label}'
                 newcat.create_group(group)
 
@@ -59,19 +64,21 @@ def multiband_catalogue(catalogues, labels, new_catalogue = 'combined_catalogue.
                 for key in cat['photometry'].attrs.keys():
                     newcat[f'{group}'].attrs[key] = cat['photometry'].attrs[key]
     
-    print(f'Created a multiband catalogue and save to {new_catalogue}')
+    print(f'Merged {len(catalogues)} and saved to {new_catalogue}')
 
     return
 
 def weight_to_error(weight_image, error_filename = None):
-    """Convert a weight image to an error map.
+    """
+    Convert a weight image to an error map.
 
     Arguments
     ---------
-    weight_image (str):
-        Path to the weight image to convert.
+    weight_image (str)
+        Path to the weight fits image to convert.
     error_filename (None, str):
-        Name of the error image to output. If None, append "to_err" to weight filename.
+        Name of the error fits image to output.
+        If None, append "_to_err" to weight filename.
     """
 
     # Load the weight image and header.
@@ -85,7 +92,7 @@ def weight_to_error(weight_image, error_filename = None):
         error_filename = f'{weight_image.remove(".fits")}_to_err.fits'
 
     # Add header keyword to indicate how the error map was generated.
-    hdr['CONVERTED'] = ('T', 'Converted to error image from weight image.')
+    hdr['FROMWHT'] = ('T', 'Converted to RMS from weight.')
 
     # Save the error image to a new file.
     fits.writeto(error_filename,err,header=hdr,overwrite=True)
@@ -93,104 +100,124 @@ def weight_to_error(weight_image, error_filename = None):
     return
 
 def error_to_weight(error_image, weight_filename = None):
-    """Convert an error image to an weight map.
+    """
+    Convert an error image to an weight map.
 
     Arguments
     ---------
-    error_image (str):
-        Path to the error image to convert.
-    weight_filename (None, str):
-        Name of the weight image to output. If None, append "to_wht" to error filename.
+    error_image (str)
+        Path to the error fits image to convert.
+    weight_filename (None, str)
+        Name of the weight fits image to output.
+        If None, append "_to_wht" to error filename.
     """
 
-    # Load the weight image and header.
+    # Load the error image and header.
     err, hdr = fits.getdata(error_image, header = True)
 
-    # Convert the weight image to error map.
+    # Convert the error image to a weight map.
     wht = np.where(np.isnan(err), 0, 1/(err**2))
 
-    # If no name for new file given, use weight filename as base.
+    # If no name for new file given, use error filename as base.
     if weight_filename == None:
         weight_filename = f'{error_image.remove(".fits")}_to_wht.fits'
 
-    # Add header keyword to indicate how the error map was generated.
-    hdr['CONVERTED'] = ('T', 'Converted to weight image from error image.')
+    # Add header keyword to indicate how the weight map was generated.
+    hdr['FROMERR'] = ('T', 'Converted to weight from RMS.')
 
-    # Save the error image to a new file.
+    # Save the weight image to a new file.
     fits.writeto(weight_filename,wht,header=hdr,overwrite=True)
 
     return
 
-def generate_error(science, weight, exposure, outname = None):
-    """Generate an error image including Poisson noise from science, weight and exposure images.
-        Assumes exposure map is downsampled by factor 4 relative to science and weight images.
+def generate_error(science, weight, exposure, grow = True, outname = None):
+    """
+    Generate an error map including Poisson noise from science, weight
+    and exposure images. See:
+    https://dawn-cph.github.io/dja/blog/2023/07/18/image-data-products/
 
     Arguments
     ---------
-    science (str):
-        Path to the science image.
-    weights (str):
-        Path to the weight image.
+    science (str)
+        Path to the science fits image.
+    weights (str)
+        Path to the weight fits image.
     exposure (str):
-        Path to the exposure time map.
+        Path to the exposure fits image.
+    grow (bool)
+        Is the exposure image downsampled by a factor 4. (For DJA images)
     outname (None, str):
-        Output filename of the generated error image. If none, append "_err" to science filename.
+        Output filename of the generated error fits image.
+        If none, append "_err" to science filename.
     """
 
+    # Set output filename.
     if outname == None:
         outname = f'{science.remove_suffix(".fits")}_err.fits'
 
+    # Load in each image.
     sci = fits.getdata(science)
     exp, exp_header = fits.getdata(exposure, header = True)
     wht, wht_header = fits.getdata(weight, header = True)
 
-    # Grow the exposure map to the original frame.
-    full_exp = np.zeros(sci.shape, dtype=int)
-    full_exp[2::4,2::4] += exp*1
-    full_exp = nd.maximum_filter(full_exp, 4)
+    # Grow the exposure map to the original frame if required.
+    if grow == True:
+        full_exp = np.zeros(sci.shape, dtype=int)
+        full_exp[2::4,2::4] += exp*1
+        full_exp = nd.maximum_filter(full_exp, 4)
 
-    # Determine multiplicative factors that have been applied since the original count-rate images.
+    # Determine multiplicative factors that have been applied since the
+    # original count-rate images.
+
     phot_scale = 1.
 
     for k in ['PHOTMJSR','PHOTSCAL']:
         print(f'{k} {exp_header[k]:.3f}')
         phot_scale /= exp_header[k]
 
-    # Unit and pixel area scale factors
+    # Unit and pixel area scale factors.
     if 'OPHOTFNU' in exp_header:
         phot_scale *= exp_header['PHOTFNU'] / exp_header['OPHOTFNU']
 
-    # "effective_gain" = electrons per DN of the mosaic
+    # Electrons per DN of the mosaic.
     effective_gain = (phot_scale * full_exp)
 
-    # Poisson variance in mosaic DN
+    # Poisson variance in mosaic DN.
     var_poisson_dn = np.maximum(sci, 0) / effective_gain
 
-    # Original variance from the `wht` image = RNOISE + BACKGROUND
+    # Original variance from the weight image.
     var_wht = 1/wht
 
-    # New total variance
+    # New total variance.
     var_total = var_wht + var_poisson_dn
     full_wht = 1 / var_total
 
-    # Null weights
+    # Null weights.
     full_wht[var_total <= 0] = 0
 
+    # Convert the full weight image to an error map
     err = np.where(full_wht==0, 0, 1/np.sqrt(full_wht))
 
+    # and save to a fits image.
     fits.writeto(outname, err, header = wht_header)
 
     return
 
 def pc2cd(hdr, key=' '):
-    """Convert a PC matrix to a CD matrix. Used when rebinning to preserve WCS information.
+    """
+    Convert a PC matrix to a CD matrix.
 
     Arguments
     ---------
-    hdr: (astropy.io.fits.Header)
-        Header containing PC matrix to be converted.
-    key: (str)
+    hdr (astropy.io.fits.Header)
+        Astropy header containing PC matrix to be converted.
+    key (str)
         Additional key attached to the PC keywords.
+
+    Returns
+    -------
+    hdr (astropy.io.fits.Header)
+        Astropy table including generated CD matrix.
     """
 
     key = key.strip()
@@ -207,22 +234,28 @@ def pc2cd(hdr, key=' '):
     return hdr
 
 def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname = None):
-    """Rebin an image to a lower resolution pixel scale using integer scaling.
+    """
+    Rebin an image to a lower resolution pixel scale by combining pixels.
     
     Arguments
     ---------
-    input_fits: (str)
-        The image to be rebinned.
-    source_scale: (float)
+    input_fits (str)
+        Filename of the fits image to be rebinned.
+    source_scale (float)
         The pixel scale of the input image in arcseconds.
-    target_scale: (float)
-        The output pixel scale in arcseconds.
-    method: (str)
-        The method to use when summing pixels. Either 'sum' for linear or 'quad' for quadratic.
-    outname: (None, str)
-        """
+    target_scale (float)
+        The desired output pixel scale in arcseconds.
+    method (str)
+        The method to use when combining pixels.
+        Either 'sum' for linear or 'quad' for quadratic.
+    outname (None, str)
+        Filename of the rebinned image.
+        If None, append "_rebinned" to input filename.
+    """
 
     print(f'Rebinning {input_fits}...')
+
+    # Set the output filename.
     if outname == None:
         outname = f'{input_fits.removesuffix(".fits")}_rebinned.fits'
 
@@ -242,8 +275,6 @@ def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname 
     # Define the block size for rebinning.
     block_size = (scale_factor, scale_factor)
 
-    print(block_size)
-
     # Rebin the image.
     if method == 'sum':
         rebinned_image = block_reduce(img, block_size, np.sum)
@@ -261,17 +292,19 @@ def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname 
 
     return
 
-def create_stack(sci_images, wht_images, stack_name = 'stacked_image.fits'):
-    """Create a stacked image for detection.
+def create_stack(sci_images, wht_images, hdr_index = 0, stack_name = 'stacked_image.fits'):
+    """Create a variance weighted stacked image for source detection.
 
     Arguments
     ---------
-    sci_images (list):
-        A list of science image file paths to stack.
-        The header used in the final images will be taken from the first image in the list.
-    wht_images (list):
-        A list of corresponding weight image file paths.
-    stack_name (str):
+    sci_images (List[str])
+        Filenames of science images to stack.
+    wht_images (List[str])
+        Filenames of the corresponding weight images.
+    hdr_index (int)
+        Index into sci_images. Use the header from this element in the
+        final image.
+    stack_name (str)
         Filename of the output stacked image.
         Suffixes _sci and _wht will be added before the fits extension.
     """
@@ -280,10 +313,10 @@ def create_stack(sci_images, wht_images, stack_name = 'stacked_image.fits'):
         raise KeyError('The number of science and weight images must be equal.')
 
     # Get the image size and headers from the first image.
-    first_image, sci_hdr = fits.getdata(sci_images[0], header=True)
-    wht_hdr = fits.getheader(wht_images[0])
+    img, sci_hdr = fits.getdata(sci_images[hdr_index], header=True)
+    wht_hdr = fits.getheader(wht_images[hdr_index])
 
-    shape = first_image.data.shape
+    shape = img.data.shape
     stack_sci = np.zeros(shape)
     stack_wht = np.zeros(shape)
 
@@ -302,47 +335,52 @@ def create_stack(sci_images, wht_images, stack_name = 'stacked_image.fits'):
     return
 
 def Gaussian_2D(coord, xo, yo, sigma_x, sigma_y, amplitude, offset):
-    """2D Gaussian fitting function. Use for determining FWHM of PSFs.
+    """
+    2D Gaussian fitting function.
     
     Arguments
     ---------
-    coord (list):
-        The (x,y) coordinate at which to evaluate the Gaussian.
-    xo (float):
+    coord (List[float])
+        The x,y coordinate at which to evaluate the Gaussian.
+    xo (float)
         The x-coordinate of the centre.
-    yo (float):
+    yo (float)
         The y-coordinate of the centre.
-    sigma_x (float):
-        Standard deviation in pixels in the x direction.
-    sigma_y (float):
-        Standard deviation in pixels the y direction.
-    amplitude (float):
+    sigma_x (float)
+        Standard deviation in the x direction in pixels.
+    sigma_y (float)
+        Standard deviation in the y direction in pixels.
+    amplitude (float)
         Amplitude of the gaussian.
-    offset (float):
+    offset (float)
         Offset to apply to the Gaussian values.
 
     Returns
     -------
-    Gaussian (1D array):
-        Flattened Gaussian distribution.
+    flat_gaussian (numpy.ndarray)
+        1D flattened Gaussian distribution.
     """
 
-    g = offset + amplitude*np.exp( - (((coord[0]-float(xo))**2)/(2*sigma_x**2) + ((coord[1]-float(yo))**2)/(2*sigma_y**2)))
+    gaussian = offset + amplitude*np.exp( - (((coord[0]-float(xo))**2)/(2*sigma_x**2)
+                                             + ((coord[1]-float(yo))**2)/(2*sigma_y**2)))
 
-    return g.ravel()
+    flat_gaussian = gaussian.ravel()
+
+    return flat_gaussian
 
 def get_PSF_FWHM(psf_path):
-    """Get FWHM in x and y directions of a PSF using Gaussian fitting.
+    """
+    Get FWHM of a PSF in x and y directions using Gaussian fitting.
 
     Arguments
     ---------
-    psf_path (str):
-        Path to PSF array fits file.
+    psf_path (str)
+        Filename of fits image PSF.
 
     Returns
     -------
-    FWHM (list):
-        List containing measured FWHM in x and y directions.
+    fwhm (List[float])
+        Measured FWHM in x and y directions.
     """
 
     # Read the PSF array from the fits file.
@@ -365,113 +403,102 @@ def get_PSF_FWHM(psf_path):
     FWHM_x = np.abs(4*sigmaX*np.sqrt(-0.5*np.log(0.5)))
     FWHM_y = np.abs(4*sigmaY*np.sqrt(-0.5*np.log(0.5)))
 
-    return [FWHM_x, FWHM_y]
+    fwhm = [FWHM_x, FWHM_y]
 
-def powspace(start, stop, power=0.5, num = 30, **kwargs):
-    """Generate a square-root spaced array with a specified number of points between two endpoints.
-        Used to measure PSF curves of growth.
+    return fwhm
 
-    Parameters
-    ----------
-    start (float):
-        The starting value of the range.
-    stop (float):
-        The ending value of the range.
-    power (float): 
-        Power of distribution, defaults to sqrt.
-    num (int):
-        The number of points to generate in the array. Default is 30.
-
-    Returns
-    -------
-    Array (1D array):
-        A 1D array of 'num' values spaced equally in square-root space
-        between 'start' and 'stop'.
+def measure_curve_of_growth(image, radii, position=None, norm=True, show=False):
     """
-
-    return np.linspace(start**power, stop**power, num=num, **kwargs)**(1/power)
-
-def measure_curve_of_growth(image, position=None, radii=None, rnorm='auto', nradii=30, rbackg=True, showme=False, verbose=False):
-    """Measure a curve of growth from cumulative circular aperture photometry on a list of radii 
-        centered on the center of mass of a source in a 2D image.
-
-    Parameters
-    ----------
-    image (numpy.ndarray):
-        2D image array.
-    position (astropy.coordinates.SkyCoord/None):
-        Position of the centre of the source. If 'None', it will be measured.
-    radii (numpy.ndarray/None):
-        Array of aperture radii. If None, use 'nradii'.
-    rnorm (float):
-        The radius to use for normalisation. Must be in 'radii'.
-    nradii (int):
-        Number of aperture radii to get from self.powspace. Only used if radii==None.
-    rbackg (bool):
-        Whether to perform backgound subtraction. 
-    showme (bool):
-        Whether to save COG and profile figure. 
-    verbose (bool):
-        Whether to print progress information.
+    Measure the Curve Of Growth of an image based on provided radii.
     
+    Arguments
+    ---------
+    image (numpy.ndarray)
+        The 2D image from which to measure the COG.
+    radii (List[float])
+        The radii in pixels at which to measure the enclosed flux.
+    position (None, list[float]) 
+        The x,y position of the source centre. If None, measure from 
+        moments.
+    norm (bool)
+        Should the COG be normalised by its maximum value?
+    show (bool)
+        Should the measured COG be plotted and displayed?
+
     Returns
     -------
-    radii (numpy.ndarray):
-        The aperture radii used.
-    cog (numpy.ndarray):
-        The measured curve of growth.
-    profile (numpy.ndarray):
-        The measured profile.
+    radii (List[float])
+        The radii at which the enclosed energy was measured.
+    cog (numpy.ndarray)
+        The value of the COG at each radius.
+    profile (numpy.ndarray)
+        The value of the profile at each radius.
     """
 
-    # Default to a sqaure root spaced array.
-    if type(radii) is type(None):
-        radii = powspace(0.5,image.shape[1]/2,num=nradii)
-
-    # Calculate the centroid of the source in the image if not given.
-    if type(position) is type(None):
+    # Calculate the centroid of the source.
+    if type(position) == type(None):
         position = centroid_com(image)
 
     # Create an aperture for each radius in radii.
-    apertures = [CircularAperture(position, r=r) for r in radii]
+    apertures = [CircularAperture(position, r = r) for r in radii]
 
-    # Remove background if requested.
-    if rbackg == True:
-        bg_mask = apertures[-1].to_mask().to_image(image.shape) == 0
-        # Background is median of image unmasked by apertures.
-        bg = np.nanmedian(image[bg_mask])
-        if verbose: print('background',bg)
-    else:
-        bg = 0.
+    # Perform aperture photometry for each aperture.
+    phot_table = aperture_photometry(image, apertures)
 
-    # Perform aperture photometry for each aperture
-    phot_table = aperture_photometry(image-bg, apertures)
     # Calculate cumulative aperture fluxes
     cog = np.array([phot_table['aperture_sum_'+str(i)][0] for i in range(len(radii))])
 
-    # Normalise at some radius.
-    if rnorm == 'auto': rnorm = image.shape[1]/2.0
-    if rnorm:
-        rnorm_indx = np.searchsorted(radii, rnorm)
-        cog /= cog[rnorm_indx]
+    # Normalise by the maximum COG value.
+    if norm == True:
+        cog /= max(cog)
 
     # Get the profile.
-    area = np.pi*radii**2 # Area enclosed by each apperture.
-    area_cog = np.insert(np.diff(area),0,area[0]) # Difference between areas.
-    profile = np.insert(np.diff(cog),0,cog[0])/area_cog # Difference between COG elements.
-    profile /= profile.max() # Normalise profile.
+
+    # Area enclosed by each apperture.
+    area = np.pi*radii**2 
+    # Difference between areas.
+    area_cog = np.insert(np.diff(area),0,area[0])
+    # Difference between COG elements.
+    profile = np.insert(np.diff(cog),0,cog[0])/area_cog 
+    # Normalise profile.
+    profile /= profile.max()
 
     # Show the COG and profile if requested.
-    if showme:
+    if show:
+        plt.grid(visible = True, alpha = 0.1)
+        plt.xlabel('Radius')
+        plt.ylabel('Enclosed')
         plt.scatter(radii, cog, s = 25, alpha = 0.7)
         plt.plot(radii,profile/profile.max())
-        plt.xlabel('Radius [pix]')
-        plt.ylabel('Curve of Growth')
 
     # Return the aperture radii, COG and profile.
     return radii, cog, profile
 
-def flag_stars(catalogue, PSF_FWHM, efficiency = 0.15, mag_limit = 26.5, min_bands = 2, mag_name = 'MAG_AUTO', fwhm_name = 'FWHM_WORLD'):
+def flag_stars(catalogue, PSF_FWHM, efficiency=0.15, mag_limit=26.5, min_bands=2,
+               mag_name='MAG_AUTO', fwhm_name='FWHM_WORLD', flag_name = 'STAR'):
+    """
+    Identify a flag stars based on SExtractor measurements and the 
+    FWHM of the PSF.
+    
+    Arguments
+    ---------
+    catalogue (str)
+        Path to hdf5 catalogue file produced by FLAGS.
+    PSF_FWHM (float)
+        FWHM of the image PSF this catalogue was determined from.
+    efficiency (float)
+        The efficiency of star identification.
+    mag_limit (float)
+        Stars must be brighter than this limit.
+    min_bands (int)
+        Objects must be identified as stars in this many bands.
+    mag_name (str)
+        Name of the magnitude dataset.
+    fwhm_name (str)
+        Name of the FWHM dataset.
+    flag_name (str)
+        Name of the star flag dataset to create.
+    """
 
     with h5py.File(catalogue, 'r+') as f:
 
@@ -512,36 +539,41 @@ def flag_stars(catalogue, PSF_FWHM, efficiency = 0.15, mag_limit = 26.5, min_ban
         print(f'Identified {sum(selection)} stars.')
 
         # Add a star flag to the catalogue.
-        if 'STAR' in f['photometry/detection'].keys():
-            del f['photometry/detection/STAR']
-        f['photometry/detection/STAR'] = selection
+        if flag_name in f['photometry/detection'].keys():
+            del f[f'photometry/detection/{flag_name}']
+        f[f'photometry/detection/{flag_name}'] = selection
 
         return
 
-def match_gaia_sources(catalogue, bands, gaia_catalogue, tolerance, ra_name = 'ALPHA_SKY', dec_name = 'DELTA_SKY'):
-    """Match sources in a GAIA star catalogue to those in an hdf5 file
+def match_gaia_sources(catalogue, bands, gaia_catalogue, tolerance, ra_name='ALPHA_SKY',
+                       dec_name='DELTA_SKY'):
+    """
+    Match and flag sources in a FLAGS catalogue to those in a GAIA
+    star catalogue
     
     Arguments
     ---------
-    catalogue (str):
-        Path to hdf5 catalogue containing the sources to be matched.
-    bands (list):
-        List containing the bands (catalogue groups) to match.
-    gaia_catalogue (str):
-        Path to the fits catalogue containing GAIA star information.
-    tolerance (float):
+    catalogue (str)
+        Filename of FLAGS hdf5 catalogue.
+    bands (List[str])
+        List containing the catalogue groups to match.
+    gaia_catalogue (str)
+        Filename of the fits GAIA star catalogue.
+    tolerance (float)
         The matching tolerance in arcseconds.
-    ra_name (str): 
+    ra_name (str):
         Name of the RA dataset in the catalogue.
-    dec_name (str):
-        Name of the DEC dataset in the catalogue."""
+    dec_name (str)
+        Name of the DEC dataset in the catalogue.
+    """
 
     # Calculate the matching tolerance in arcseconds.
     arcsec_tolerance = tolerance*u.arcsec
 
     # Load the GAIA catalogue and get source positions.
     gaia_cat = Table.read(gaia_catalogue)
-    gaia_coord = SkyCoord(ra=np.array(gaia_cat['ra'])*u.degree, dec=np.array(gaia_cat['dec'])*u.degree)
+    gaia_coord = SkyCoord(ra=np.array(gaia_cat['ra'])*u.degree,
+                          dec=np.array(gaia_cat['dec'])*u.degree)
 
     # For each band requested.
     with h5py.File(catalogue, 'r+') as cat:
@@ -554,7 +586,8 @@ def match_gaia_sources(catalogue, bands, gaia_catalogue, tolerance, ra_name = 'A
             p_flag = np.zeros(len(cat[f'photometry/{band}/{ra_name}'][:]))
 
             # Get the positions of the sources.
-            cat_coord = SkyCoord(ra=cat[f'photometry/{band}/{ra_name}'][:]*u.degree, dec=cat[f'photometry/{band}/{dec_name}'][:]*u.degree)
+            cat_coord = SkyCoord(ra=cat[f'photometry/{band}/{ra_name}'][:]*u.degree,
+                                 dec=cat[f'photometry/{band}/{dec_name}'][:]*u.degree)
 
             # Find the source closest to each gaia source.
             idx, d2d, d3d = gaia_coord.match_to_catalog_sky(cat_coord)
@@ -571,7 +604,7 @@ def match_gaia_sources(catalogue, bands, gaia_catalogue, tolerance, ra_name = 'A
             for index, p_over_e in zip(idx[s], gaia_cat['parallax_over_error'][s]):
                 p_flag[index] = p_over_e
 
-            # Add the flag array
+            # Add the flag array.
             if 'GAIA_STAR' in cat[f'photometry/{band}'].keys():
                 del cat[f'photometry/{band}/GAIA_STAR']
             cat[f'photometry/{band}/GAIA_STAR'] = star_flag
@@ -587,16 +620,18 @@ def match_gaia_sources(catalogue, bands, gaia_catalogue, tolerance, ra_name = 'A
     return
 
 def regions_to_mask(image, regions, outname = None):
-    """Convert a DS9 region file to an image mask.
+    """
+    Convert a DS9 region file to an image mask.
     
     Arguments
     ---------
-    image (str):
-        Path to fits image containing the image to be masked.
-    regions (str):
+    image (str)
+        Filename of fits image to be masked.
+    regions (str)
         Path to DS9 ".reg" file containing the masking regions.
-    outname (None, str):
-        Output name for the generated mask. If None, append "_mask" to image name.
+    outname (None, str)
+        Output name for the generated mask.
+        If None, append "_mask" to image name.
     """
 
     # Set the output name.
@@ -626,7 +661,8 @@ def regions_to_mask(image, regions, outname = None):
 
     return
 
-def create_edge_mask(images, off_image = 0, buffer_size = 5, threshold = 0.1, n_pixels = 50, outname = 'combined_edge_mask.fits'):
+def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels=50,
+                     outname='combined_edge_mask.fits'):
     """
     Use binaray hole filling and sobel filters to identify and mask
     image edges and merge multiple mask into a single combined mask.
@@ -660,7 +696,9 @@ def create_edge_mask(images, off_image = 0, buffer_size = 5, threshold = 0.1, n_
 
     masks = []
     for image in images:
-        print(image)
+
+        print(f'Finding edges in {image}...')
+
         sci , hdr = fits.getdata(image, header=True)
 
         # Fill any holes that may be identified as edges.
@@ -669,7 +707,8 @@ def create_edge_mask(images, off_image = 0, buffer_size = 5, threshold = 0.1, n_
         # Identify off-image regions
         off_image_mask = (data == off_image)
 
-        # Do not create a mask if the edge identified is with this many pixels of the image edge.
+        # Do not create a mask if the edge identified is with this many
+        # pixels of the image edge.
         # Can create spurious masks if not set.
         buffer_mask = np.zeros_like(data, dtype=bool)
         buffer_mask[:buffer_size, :] = True  # Top buffer
@@ -687,16 +726,17 @@ def create_edge_mask(images, off_image = 0, buffer_size = 5, threshold = 0.1, n_
 
         # Combine off-image mask and dilated edge mask
         comb_mask = np.logical_and(off_image_mask, edge_mask)
-        comb_mask[buffer_mask] = False  # Exclude buffer zone from masking
+        # Exclude buffer zone from masking
+        comb_mask[buffer_mask] = False  
 
         # Dilate the edge mask
-        final_mask = nd.binary_dilation(comb_mask, iterations=n_pixels)  # 50-pixel dilation
+        final_mask = nd.binary_dilation(comb_mask, iterations=n_pixels) 
 
         masks.append(final_mask)
     
     # Merge masks if required.
     if len(masks) > 1:
-        print('merging')
+        print('Merging...')
         combined_mask = np.zeros_like(masks[0], dtype=bool)
         for mask in masks:
             combined_mask = np.logical_or(combined_mask, mask)
@@ -709,7 +749,7 @@ def create_edge_mask(images, off_image = 0, buffer_size = 5, threshold = 0.1, n_
 
     return combined_mask
 
-def flag_mask(catalogue, mask, bands, label = 'MASK', X_name = 'X_IMAGE', Y_name = 'Y_IMAGE'):
+def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_IMAGE'):
     """Flag sources with centres within a masked region.
 
     WARNING: Assumes SExtractor coordinates so X -> Y, Y -> X.
@@ -717,18 +757,19 @@ def flag_mask(catalogue, mask, bands, label = 'MASK', X_name = 'X_IMAGE', Y_name
     
     Arguments
     ---------
-    catalogue (str):
-        Path to hdf5 catalogue with sources to be masked.
-    mask (str):
-        Path to fits file containing the mask
-    bands (list): 
+    catalogue (str)
+        Filename of hdf5 catalogue with sources to be masked.
+    mask (str)
+        Filename fits image mask.
+    bands (List[str])
         List of photometry sub groups to be considered.
-    label (str):
+    label (str)
         Name to use for the flag dataset.
-    X_name (str):
+    X_name (str)
         Name of the X coordinate dataset.
-    Y_name (str):
-        Name of the Y coordinate dataset."""
+    Y_name (str)
+        Name of the Y coordinate dataset.
+    """
 
     # Read in the catalogue.
     with h5py.File(catalogue, 'r+') as f:
