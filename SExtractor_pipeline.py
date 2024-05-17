@@ -756,6 +756,12 @@ class SExtractor():
         parameter_filename = self.write_params(measurement, outdir)
         img_SEconfig['PARAMETERS_NAME'] = parameter_filename
 
+        # Check that checkimage directory exists.
+        if img_SEconfig['CHECKIMAGE_NAME'] != None:
+            dir_name = os.path.dirname(img_SEconfig['CHECKIMAGE_NAME'])
+            if os.path.isdir(dir_name) == False:
+                raise KeyError(f'{dir_name} does not exist. Please set CHECKIMAGE_NAME correctly.')
+
         # Generate the base SExtractor command based on the mode.
 
         # Two image with weights.
@@ -771,6 +777,8 @@ class SExtractor():
         # Single image with weight.
         if (type(image) == str) and (type(weight) == str):
             basecmd = [self.sexpath, "-c", sexfile, image, '-WEIGHT_IMAGE', weight]
+
+        print(basecmd)
 
         # Run SE using this command and the config parameters.
         self.run_SExtractor(basecmd, img_SEconfig)
