@@ -1,4 +1,5 @@
-# Adapted from the ceers-nircam code available at https://github.com/ceers/ceers-nircam 
+# Adapted from the ceers-nircam code available at 
+# https://github.com/ceers/ceers-nircam 
 
 import os
 import yaml
@@ -13,18 +14,22 @@ from astropy.convolution import convolve_fft, Ring2DKernel, Gaussian2DKernel
 
 from scipy.ndimage import median_filter
 
-from photutils import Background2D, BiweightLocationBackground, BkgIDWInterpolator, BkgZoomInterpolator
+from photutils import Background2D, BiweightLocationBackground, BkgIDWInterpolator
+from photutils import BkgZoomInterpolator
 from photutils.segmentation import detect_sources
 from photutils.utils import circular_footprint
 
 import warnings
 
 class Background():
-    """Class for performing background subtraction on multiple observations
-        based on individual or merged tiered source masks."""
+    """
+    Perform background subtraction on multiple observations based on 
+    individual or merged tiered source masks.
+    """
 
     def __init__(self, background_config):
-        """__init__ method for Background
+        """
+        __init__ method for Background
         
         Arguments
         ---------
@@ -42,65 +47,51 @@ class Background():
             self.config = content[0]
     
     def replace_masked(self, sci, mask):
-        """Replace masked regions of an image with a mean background estimate.
+        """
+        Replace masked regions of an image with a mean background 
+        estimate.
         
         Arguments
         ---------
-        sci (2D-array)
-            The image for which to replace masked regions.
-        mask (2D-array)
-            The image mask. 0 if unmasked, 1 if masked.
+        sci (numpy.ndarray)
+            The 2D image.
+        mask (numpy.ndarray)
+            The 2D image mask where 0 if unmasked, 1 if masked.
 
         Returns
         -------
-        sci_filled (2D-array)
-            The image with masked regions replaced by the mean background.
+        sci_filled (numpy.ndarray)
+            The image with masked regions replaced by the mean 
+            background.
         """
 
         # Replace masked regions of the image with NaN.
-        sci_nan = np.choose(mask,(sci,np.nan))
+        sci_nan = np.choose(mask, (sci, np.nan))
 
         # Approximate mean background based on unmasked regions.
-        robust_mean_background = astrostats.biweight_location(sci_nan,c=6.,ignore_nan=True)
+        robust_mean_background = astrostats.biweight_location(sci_nan, c = 6., ignore_nan = True)
 
         # Replace the masked regions with the approximate background.
-        sci_filled = np.choose(mask,(sci,robust_mean_background))
+        sci_filled = np.choose(mask, (sci, robust_mean_background))
 
         return sci_filled
-    
-    def off_detector(self, err):
-        """Return an array indicating if a pixel is off the detector.
-        
-        Arguments
-        ---------
-        err (2D-array)
-            Error image with NaN indicating off detector regions.
-            
-        Returns
-        -------
-        detector_mask (2D-array)
-            True-False array indicating off and on detector pixels.
-        """
-
-        # True if OFF detector, False if on detector.
-        detector_mask = np.isnan(err)
-
-        return detector_mask
 
     def clipped_ring_median_filter(self, sci, mask, config):
-        """Remove ring median filtered signal from an image.
+        """
+        Remove ring median filtered signal from an image.
             
         Arguments
         ---------
-        sci (2D-array)
-            The image to be filtered.
-        mask (2D-array)
-            Mask indicating sources and off detector regions.
+        sci (numpy.ndarray)
+            The 2D image to be filtered.
+        mask (numpy.ndarray)
+            The 2D image mask where 0 if unmasked, 1 if masked.
             
         Returns
         -------
-        rmf_image (2D-array)
-            The science image after subtracting the ring median filtered signal.
+        rmf_image (numpy.ndarray)
+            The 2D image after subtracting the ring median filtered 
+            signal.
         """
 
         # First make a smooth background.
@@ -114,51 +105,55 @@ class Background():
               interpolator = BkgZoomInterpolator())
         
         # Estimate the rms after subtracting smooth background.
-        background_rms = astrostats.biweight_scale((sci-bkg.background)[~mask]) 
+        background_rms = astrostats.biweight_scale((sci - bkg.background)[~mask]) 
 
         # Apply a floating ceiling to the original image
         ceiling = config["RING_CLIP_MAX_SIGMA"] * background_rms + bkg.background
-        # Pixels above the ceiling are masked before doing the ring-median filtering
+        # Pixels above the ceiling are masked before doing the
+        # ring-median filtering
         ceiling_mask = sci > ceiling
 
-        print(f"Ring median filtering with radius, width = ",end='')
+        print(f"Ring median filtering with radius, width = ", end = '')
         print(f'{config["RING_RADIUS_IN"]}, {config["RING_WIDTH"]}')
 
         # Replace masked pixels with a mean background estimate.
-        sci_filled = self.replace_masked(sci,mask | ceiling_mask)
+        sci_filled = self.replace_masked(sci, mask | ceiling_mask)
 
         # Median filter using a 2D ring kernel.
         ring = Ring2DKernel(config["RING_RADIUS_IN"], config["RING_WIDTH"])
-        filtered = median_filter(sci_filled, footprint=ring.array)
+        filtered = median_filter(sci_filled, footprint = ring.array)
 
-        # Return the science image after removing the median filtered signal.
-        rmf_image = sci-filtered
+        # Return the science image after removing the median filtered
+        # signal.
+        rmf_image = sci - filtered
 
         return rmf_image
     
-    def tier_mask(self, img, mask, config, tiernum = 0):
-        """Update a source mask using parameters dependent on 
-            the tier of masking.
+    def tier_mask(self, img, mask, config, tiernum=0):
+        """
+        Update a source mask using parameters dependent on the tier of 
+        masking.
             
         Arguments
         ---------
-        img (2D-array)
-            Image from which to mask sources.
-        mask (2D-array)
-            The source mask at this masking tier.
+        img (numpy.ndarray)
+            The 2D image from which to mask.
+        mask (numpy.ndarray)
+            The 2D image mask where 0 if unmasked, 1 if masked.
         tiernum (int)
             The tier of source masking.
             
         Returns
         -------
-        mask (2D-array)
-            The updated source mask.
+        mask (numpy.ndarray)
+            The updated 2D source mask.
         """
 
         # Calculate a robust RMS.
         background_rms = astrostats.biweight_scale(img[~mask])
 
-        # Replace the masked pixels by the robust background level so the convolution doesn't smear them
+        # Replace the masked pixels by the robust background level so the
+        # convolution doesn't smear them.
         background_level = astrostats.biweight_location(img[~mask])
         replaced_img = np.choose(mask,(img,background_level))
 
@@ -166,21 +161,23 @@ class Background():
         print(f"  Biweight RMS of ring-median-filtered image  = {background_rms}")
 
         # Convolve the image with a 2D Gaussian kernel.
-        convolved_difference = convolve_fft(replaced_img,Gaussian2DKernel(config["TIER_KERNEL_SIZE"][tiernum]),allow_huge=True)
+        convolved_difference = convolve_fft(
+            replaced_img, Gaussian2DKernel(config["TIER_KERNEL_SIZE"][tiernum]), allow_huge = True)
 
-        # First detect the sources, then make masks from the SegmentationImage
+        # First detect the sources, then make masks from the 
+        # SegmentationImage
         seg_detect = detect_sources(convolved_difference, 
-                    threshold=config["TIER_NSIGMA"][tiernum] * background_rms,
-                    npixels=config["TIER_NPIXELS"][tiernum], 
-                     mask=mask)
+                                    threshold = config["TIER_NSIGMA"][tiernum] * background_rms, 
+                                    npixels = config["TIER_NPIXELS"][tiernum],
+                                    mask = mask)
         
         # Mask out the sources.
         if config["TIER_DILATE_SIZE"][tiernum] == 0:
             mask = seg_detect.make_source_mask()
         else:
             # Dilate the mask is required.
-            footprint = circular_footprint(radius=config["TIER_DILATE_SIZE"][tiernum])
-            mask = seg_detect.make_source_mask(footprint=footprint)
+            footprint = circular_footprint(radius = config["TIER_DILATE_SIZE"][tiernum])
+            mask = seg_detect.make_source_mask(footprint = footprint)
 
         print(f"Tier #{tiernum}:")
         print(f'  Kernel size = {config["TIER_KERNEL_SIZE"][tiernum]}')
@@ -191,40 +188,43 @@ class Background():
         return mask
 
     def mask_sources(self, img, bitmask, config, starting_bit=1): 
-        """Iteratively mask sources using self.tier_mask.
+        """
+        Iteratively mask sources using self.tier_mask.
 
         Arguments
         ----------
-        img (2D-array)
-            The image to be masked.
-        bitmask (2D-array)
-            The starting bitmask.
+        img (numpy.ndarray)
+            The 2D image to be masked.
+        bitmask (numpy.ndarray)
+            The 2D starting bitmask.
         starting_bit (int)
             Add bits for these masks to an existing bitmask.
         
         Returns
         -------
-        bitmask (2D-array)
-            The final combined bitmask after all tiers of source masking.
+        bitmask (numpy.ndarray)
+            The final 2D combined bitmask after all tiers of source
+            masking.
         """
 
         first_mask = bitmask != 0
 
         # Iterate over the tiers and combine masks.
         for tiernum in range(len(config["TIER_NSIGMA"])):
-            mask = self.tier_mask(img, first_mask, config, tiernum=tiernum)
-            bitmask = np.bitwise_or(bitmask,np.left_shift(mask,tiernum+starting_bit))
+            mask = self.tier_mask(img, first_mask, config, tiernum = tiernum)
+            bitmask = np.bitwise_or(bitmask, np.left_shift(mask, tiernum + starting_bit))
         return bitmask
     
     def estimate_background(self, img, mask, config):
-        """Estimate an image background using 'zoom' interpolation.
+        """
+        Estimate an image background using 'zoom' interpolation.
         
         Arguments
         ---------
-        img (2D-array)
-            The image to be background subtracted.
-        mask (2D-array)
-            The image mask.
+        img (numpy.ndarray)
+            The 2D image to be background subtracted.
+        mask (numpy.ndarray)
+            The 2D image mask where 0 if unmasked, 1 if masked.
 
         Returns
         -------
@@ -243,14 +243,15 @@ class Background():
         return bkg
     
     def estimate_background_IDW(self, img, mask, config):
-        """Estimate an image background using IDW interpolation.
+        """
+        Estimate an image background using 'IDW' interpolation.
         
         Arguments
         ---------
-        img (2D-array)
-            The image to be background subtracted.
-        mask (2D-array)
-            The image mask.
+        img (numpy.ndarray)
+            The 2D image to be background subtracted.
+        mask (numpy.ndarray)
+            The 2D image mask where 0 if unmasked, 1 if masked.
 
         Returns
         -------
@@ -273,30 +274,31 @@ class Background():
         
         Arguments
         ---------
-        bkgd (2D-array)
-            The background to evaluate.
-        err (2D-array)
-            The error map belonging to the image 'bkgd' was measured from.
-        mask (2D-array)
-            The image mask.
+        bkgd (numpy.ndarray)
+            The 2D background to evaluate.
+        err (numpy.ndarray)
+            The error map belonging to the image 'bkgd' was measured 
+            from.
+        mask (numpy.ndarray)
+            The 2D image mask where 0 if unmasked, 1 if masked.
         """
 
         # True if on detector, False if not.
-        on_detector = np.logical_not(self.off_detector(err))
+        on_detector = np.logical_not(np.isnan(err))
     
         # Mean and deviation of background under masked pixels.
         mean_masked = bkgd[mask & on_detector].mean()
         std_masked = bkgd[mask & on_detector].std()
-        stderr_masked = mean_masked/(np.sqrt(len(bkgd[mask]))*std_masked)
+        stderr_masked = mean_masked / (np.sqrt(len(bkgd[mask]))*std_masked)
     
         # Mean and deviation of background in unmasked regions.
         mean_unmasked = bkgd[~mask & on_detector].mean()
         std_unmasked = bkgd[~mask & on_detector].std()
-        stderr_unmasked = mean_unmasked/(np.sqrt(len(bkgd[~mask]))*std_unmasked)
+        stderr_unmasked = mean_unmasked / (np.sqrt(len(bkgd[~mask]))*std_unmasked)
         
         # Calculate the significance of the difference in mean values.
         diff = mean_masked - mean_unmasked
-        significance = diff/np.sqrt(stderr_masked**2 + stderr_unmasked**2)
+        significance = diff / np.sqrt(stderr_masked**2 + stderr_unmasked**2)
         
         print(f"Mean under masked pixels   = {mean_masked:.4f} +- {stderr_masked:.4f}")
         print(f"Mean under unmasked pixels = "
@@ -306,14 +308,23 @@ class Background():
         return
     
     def check_sci_err(self, science_images, error_images):
-        """Check science and error (or background) images have been given in the correct list format.
+        """
+        Check science and error (or background) images have been given in
+        the correct list format.
         
         Arguments
         ---------
-        science_images (Any):
+        science_images (str, List[str])
             The science images to check.
-        error_images (Any):
+        error_images (str, List[str])
             The error (or background) images to check.
+
+        Returns
+        -------
+        science_images (List[str])
+            The science images in the correct format.
+        error_images (List[str])
+            The error (or background) images in the correct format.
         """
 
         # If individual images are given convert to lists.
@@ -322,11 +333,15 @@ class Background():
             error_images = [error_images]
         # If not strings or lists raise an error.
         if (type(science_images) != list) and (type(error_images) != list):
-            raise KeyError(f'Input images should be filepaths or lists of filepaths but have type {type(science_images)} and {type(error_images)}.')
+            raise KeyError(
+                f'Input images should be filepaths or lists of filepaths'
+                f' but have type {type(science_images)} and {type(error_images)}.')
         
         # Raise an error if the lists are not of the same length.
         if len(science_images) != len(error_images):
-            raise KeyError(f'There should be corresponding images of each type but have lengths {len(science_images)} and {len(error_images)}.') 
+            raise KeyError(
+                f'There should be corresponding images of each type but have lengths'
+                f' {len(science_images)} and {len(error_images)}.') 
         
         # Check all the filepaths are valid before starting.
         badpaths = []
@@ -338,28 +353,33 @@ class Background():
 
         return science_images, error_images
 
-    def individual_background(self, science_images, error_images, parameters = {}, suffix = 'bkgsub', replace_sci = False, store_mask = True):
-        """Perform individual background subtraction with tiered source masking.
+    def individual_background(self, science_images, error_images, parameters={}, suffix='bkgsub',
+                              replace_sci=False, store_mask=True):
+        """
+        Perform individual background subtraction with tiered source masking.
         
         Arguments
         ---------
-        science_images (str, list)
-            The science image(s) to measure and subtract the background from.
-        error_images (str, list)
-            The corresponding error images.
+        science_images (str, List[str])
+            Filename(s) of science image(s) to subtract the background
+            from.
+        error_images (str, List[str])
+            The corresponding error image(s).
         parameters (dict)
-            Key-value pairs overwritting parameters given in the config file.
+            Key-value pairs overwritting parameters given in the config
+            file.
         suffix (str)
             Suffix to append to the science filenames when saving.
         replace_sci (bool)
             Whether to overwrite the science image or create a new file.
         store_mask (bool)
-            Whether to store the tiered source mask as an extension. Required for merged masking.
+            Whether to store the tiered source mask as an extension.
+            Required for merged masking.
         
         Returns
         -------
-        bkgsub_filenames (list)
-            List of filenames of the background subtracted images.
+        bkgsub_filenames (List[str])
+            Filenames of the generated background subtracted images.
         """
 
         # Get the science and error images in the correct format.
@@ -371,9 +391,11 @@ class Background():
                 if key in config:
                     config[key] = value
                 else:
-                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.', stacklevel=2)
+                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.',
+                                  stacklevel=2)
 
-        # Store the filenames of the background subtracted images for later.
+        # Store the filenames of the background subtracted images for
+        # later.
         bkgsub_filenames = []
         for sci_filename, err_filename in zip(sci_images, err_images):
 
@@ -387,15 +409,15 @@ class Background():
             bitmask = np.zeros(sci.shape,np.uint32) # Enough for 32 tiers
 
             # First level is for masking pixels off the detector
-            off_detector_mask = self.off_detector(err)
+            off_detector_mask = np.isnan(err)
             mask = off_detector_mask 
-            bitmask = np.bitwise_or(bitmask,np.left_shift(mask,0))
+            bitmask = np.bitwise_or(bitmask, np.left_shift(mask,0))
 
             # Ring-median filter the image.
             filtered = self.clipped_ring_median_filter(sci, mask, config)
             
             # Mask sources iteratively in tiers
-            bitmask = self.mask_sources(filtered, bitmask, config, starting_bit=1)
+            bitmask = self.mask_sources(filtered, bitmask, config, starting_bit = 1)
             mask = (bitmask != 0) 
 
             # Estimate the background using just unmasked regions
@@ -406,18 +428,18 @@ class Background():
             bkgd = bkg.background
 
             # Subtract the background
-            bkgd_subtracted = sci-bkgd
+            bkgd_subtracted = sci - bkgd
 
             # Evaluate the bias under all sources.
             print("Bias under bright sources:")
-            self.evaluate_bias(bkgd,err,mask)
+            self.evaluate_bias(bkgd, err, mask)
 
             # And just under fainter sources.
             print("\nBias under fainter sources")
-            faintmask = np.zeros(sci.shape,bool)
-            for t in (3,4):
+            faintmask = np.zeros(sci.shape, bool)
+            for t in (3, 4):
                 faintmask = faintmask | (np.bitwise_and(bitmask,2**t) != 0)
-            self.evaluate_bias(bkgd,err,faintmask)
+            self.evaluate_bias(bkgd, err, faintmask)
             
             # Overwrite or create new file.
             if replace_sci == True:
@@ -433,16 +455,16 @@ class Background():
             for (key, value) in config.items():
                 hdr[f'HIERARCH {key}'] = str(value)
 
-            fits.writeto(out_filename, bkgd_subtracted, header=hdr, overwrite=True)
+            fits.writeto(out_filename, bkgd_subtracted, header = hdr, overwrite = True)
 
             if store_mask == True:
                 # Create header for mask.
                 wcs = WCS(hdr)
-                hdu_mask = fits.ImageHDU(bitmask,header=wcs.to_header(),name='TIERMASK')
+                hdu_mask = fits.ImageHDU(bitmask,header = wcs.to_header(), name = 'TIERMASK')
                 # Append as extension to background subtracted file.
                 hdul = fits.open(out_filename)
                 hdul.append(hdu_mask)
-                hdul.writeto(out_filename, overwrite=True)
+                hdul.writeto(out_filename, overwrite = True)
                 hdul.close()
             
             bkgsub_filenames.append(out_filename)
@@ -450,23 +472,31 @@ class Background():
         # Return a list of background subtracted filenames.
         return bkgsub_filenames
 
-    def merged_background(self, science_images, bkgsub_images, parameters = {}, WCS_filter = 0, suffix = None, merged_name = None):
-        """Perform background subtraction using a mask merged from multiple images.
+    def merged_background(self, science_images, bkgsub_images, parameters={}, WCS_filter=0,
+                          suffix=None, merged_name=None):
+        """
+        Perform background subtraction using a mask merged from multiple 
+        images.
         
         Arguments
         ---------
-        science_images (list):
-            The science image to measure and subtract the background from.
-        bkgsub_images (list)
-            The background subtracted images using individual masks.
+        science_images (List[str])
+            Filenames of science images to subtract the background
+            from.
+        bkgsub_images (List[str])
+            Filenames background subtracted images using individual 
+            masks.
         parameters (dict)
-            Key-value pairs overwritting parameters given in the config file.
+            Key-value pairs overwritting parameters given in the config 
+            file.
         WCS_filter (int):
-            Index into science_images. Take the WCS information from this image.
-        suffix (str)
+            Index into science_images. Take the WCS information from this
+            image.
+        suffix (None, str)
             Suffix to append to the science filenames when saving.
         merged_name (str, None):
-            The filepath to save the merged mask to.
+            Filename for the output merged source mask.
+            If None, don't save.
         """
             
         print('Calculating background using merged mask:')
@@ -475,15 +505,17 @@ class Background():
         science_images, bkgsub_images = self.check_sci_err(science_images, bkgsub_images)
         if len(science_images) == 1:
             raise KeyError('Only one science image given so not possible to create a merged mask.')
-        if (WCS_filter >= len(science_images)) or (WCS_filter<0):
-            raise ValueError(f'WCS_filter should index science images but has value {WCS_filter} for {len(science_images)} images.')
+        if (WCS_filter >= len(science_images)) or (WCS_filter < 0):
+            raise ValueError(f'WCS_filter should index science images but has value {WCS_filter}'
+                             f' for {len(science_images)} images.')
 
         config = copy.deepcopy(self.config)
         for (key, value) in parameters.items():
                 if key in config:
                     config[key] = value
                 else:
-                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.', stacklevel=2)
+                    warnings.warn(f'{key} is not a valid parameter. Continuing without updating.', 
+                                  stacklevel=2)
 
         mask = None
         print('Generating mask...')
@@ -499,7 +531,7 @@ class Background():
 
                 # Get the mask.
                 input_tiermask = hdu['TIERMASK'].data
-                this_source_mask = np.left_shift(np.right_shift(input_tiermask,1),1)
+                this_source_mask = np.left_shift(np.right_shift(input_tiermask, 1), 1)
 
                 # Merge the masks.
                 if mask is None:
@@ -520,14 +552,16 @@ class Background():
         if os.path.dirname(merged_name) != basedir:
             merged_name = f'{basedir}/{os.path.basename(merged_name)}'
 
-        hduout = fits.PrimaryHDU(mask, header=wcs.to_header())
-        hduout.writeto(merged_name, overwrite=True)
+        hduout = fits.PrimaryHDU(mask, header = wcs.to_header())
+        hduout.writeto(merged_name, overwrite = True)
 
-        # Run final background subtraction on each image using merged mask
+        # Run final background subtraction on each image using merged
+        # mask
         for (image, bkgimage) in zip(science_images, bkgsub_images):
             print(f'Measuring final background for {bkgimage}...')
 
-            # Get tiermask from bgk-subtracted image to get bordermask specific to this image.
+            # Get tiermask from bgk-subtracted image to get bordermask
+            # specific to this image.
             with fits.open(bkgimage) as hdumask:
                 bordermask = hdumask['TIERMASK'].data == 1 
 
@@ -536,7 +570,8 @@ class Background():
             sourcemask = merged_mask | bordermask
             mask = sourcemask != 0
 
-            # Open the science image and measure the background using the merged mask..
+            # Open the science image and measure the background using the
+            # merged mask.
             sci, hdr = fits.getdata(image, header = True)
             wcs = WCS(hdr)
 
@@ -545,7 +580,7 @@ class Background():
             else:
                 bkg = self.estimate_background(sci, mask, config)
             bkgsub = sci - bkg.background
-            bkgsub = np.choose(bordermask, (bkgsub,0.))
+            bkgsub = np.choose(bordermask, (bkgsub, 0.))
 
             # Overwrite the original background image.
             print(f'Saving background subtracted image to {bkgimage}...')
@@ -557,12 +592,14 @@ class Background():
 
             bkgsub = np.where(sci == 0, 0, bkgsub)
 
-            # If no suffix given, overwrite the original background subtracted image.
+            # If no suffix given, overwrite the original background
+            # subtracted image.
             if suffix == None:
-                fits.writeto(bkgimage, bkgsub, header=hdr, overwrite=True)
+                fits.writeto(bkgimage, bkgsub, header = hdr, overwrite = True)
             # Otherwise create a new file.
             else:
-                fits.writeto(image.replace(".fits", f"_{suffix}.fits"), bkgsub, header=hdr, overwrite=True) 
+                fits.writeto(image.replace(".fits", f"_{suffix}.fits"), bkgsub, header = hdr, 
+                             overwrite = True) 
 
         # Delete merged mask if required.
         if '.temp' in merged_name:
@@ -570,31 +607,41 @@ class Background():
 
         return        
 
-    def full_background(self, science_images, error_images, parameters = {}, suffix = 'bkgsub', suffix_merged = 'mbkgsub', WCS_filter = 0, merged_name = None):
-        """Perform iterative source masking and background subtraction based on merged mask.
+    def full_background(self, science_images, error_images, parameters={}, suffix='bkgsub',
+                        suffix_merged='mbkgsub', WCS_filter=0, merged_name=None):
+        """
+        Perform iterative source masking on individual images and 
+        measure final background from a merged mask.
         
         Arguments
         ---------
-        science_images (list)
-            The science image(s) to measure and subtract the background from.
-        error_images (list)
-            The error images corresponding to each science image.
+        science_images (List[str])
+            Filenames of science images to subtract the background
+            from.
+        error_images (List[str])
+            The corresponding error images.
         parameters (dict)
-            Key-value pairs overwritting parameters given in the config file.
+            Key-value pairs overwritting parameters given in the config
+            file.
         suffix (str)
-            Suffix to append to the science filenames when saving individual backgrounds.
+            Suffix to append to the science filenames when saving
+            individual backgrounds.
         suffix_merged (str)
-            Suffix to append to the science filenames when saving merged backgrounds.
+            Suffix to append to the science filenames when saving
+            merged backgrounds.
         WCS_filter (int)
-            Index into science_images. Take the WCS information from this image.
+            Index into science_images. Take the WCS information from this
+            image.
         merged_name (str, None)
             The filepath to save the merged mask to. If None, don't save.
         """
 
         # Measure the individual backgrounds.
-        bkgsub_images = self.individual_background(science_images, error_images, parameters, suffix = suffix, replace_sci = False, store_mask = True)
+        bkgsub_images = self.individual_background(science_images, error_images, parameters, suffix,
+                                                   False, True)
 
         # Measure the merged background.
-        self.merged_background(science_images, bkgsub_images, parameters, WCS_filter, suffix_merged, merged_name)
+        self.merged_background(science_images, bkgsub_images, parameters, WCS_filter,
+                               suffix_merged, merged_name)
 
         return
