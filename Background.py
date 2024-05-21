@@ -430,6 +430,8 @@ class Background():
             # Subtract the background
             bkgd_subtracted = sci - bkgd
 
+            bkgd_subtracted = np.where(np.isnan(err), 0, bkgd_subtracted)
+
             # Evaluate the bias under all sources.
             print("Bias under bright sources:")
             self.evaluate_bias(bkgd, err, mask)
