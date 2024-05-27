@@ -129,7 +129,7 @@ class Background():
 
         return rmf_image
     
-    def tier_mask(self, img, mask, config, tiernum=0):
+    def tier_mask(self, img, mask, scaling, config, tiernum=0):
         """
         Update a source mask using parameters dependent on the tier of 
         masking.
@@ -140,6 +140,9 @@ class Background():
             The 2D image from which to mask.
         mask (numpy.ndarray)
             The 2D image mask where 0 if unmasked, 1 if masked.
+        scaling (numpy.ndarray)
+            The 2D image defining the detection threshold scaling of 
+            each pixel.
         tiernum (int)
             The tier of source masking.
             
@@ -149,6 +152,12 @@ class Background():
             The updated 2D source mask.
         """
 
+        print(f"Tier #{tiernum}:")
+        print(f'  Kernel size = {config["TIER_KERNEL_SIZE"][tiernum]}')
+        print(f'  N-sigma = {config["TIER_NSIGMA"][tiernum]}')
+        print(f'  N-pixels = {config["TIER_NPIXELS"][tiernum]}')
+        print(f'  Dilate size = {config["TIER_DILATE_SIZE"][tiernum]}')
+
         # Calculate a robust RMS.
         background_rms = astrostats.biweight_scale(img[~mask])
 
@@ -157,7 +166,7 @@ class Background():
         background_level = astrostats.biweight_location(img[~mask])
         replaced_img = np.choose(mask,(img,background_level))
 
-        print(f"  Median of ring-median-filtered image = {np.median(img)}")
+        print(f"  Median of ring-median-filtered image = {np.median(img[~mask])}")
         print(f"  Biweight RMS of ring-median-filtered image  = {background_rms}")
 
         # Convolve the image with a 2D Gaussian kernel.
@@ -167,7 +176,7 @@ class Background():
         # First detect the sources, then make masks from the 
         # SegmentationImage
         seg_detect = detect_sources(convolved_difference, 
-                                    threshold = config["TIER_NSIGMA"][tiernum] * background_rms, 
+                                    threshold = config["TIER_NSIGMA"][tiernum] * background_rms * scaling, 
                                     npixels = config["TIER_NPIXELS"][tiernum],
                                     mask = mask)
         
@@ -179,15 +188,9 @@ class Background():
             footprint = circular_footprint(radius = config["TIER_DILATE_SIZE"][tiernum])
             mask = seg_detect.make_source_mask(footprint = footprint)
 
-        print(f"Tier #{tiernum}:")
-        print(f'  Kernel size = {config["TIER_KERNEL_SIZE"][tiernum]}')
-        print(f'  N-sigma = {config["TIER_NSIGMA"][tiernum]}')
-        print(f'  N-pixels = {config["TIER_NPIXELS"][tiernum]}')
-        print(f'  Dilate size = {config["TIER_DILATE_SIZE"][tiernum]}')
-
         return mask
 
-    def mask_sources(self, img, bitmask, config, starting_bit=1): 
+    def mask_sources(self, img, bitmask, scaling, config, starting_bit=1): 
         """
         Iteratively mask sources using self.tier_mask.
 
@@ -197,6 +200,9 @@ class Background():
             The 2D image to be masked.
         bitmask (numpy.ndarray)
             The 2D starting bitmask.
+        scaling (numpy.ndarray)
+            The 2D image defining the detection threshold scaling of 
+            each pixel.
         starting_bit (int)
             Add bits for these masks to an existing bitmask.
         
@@ -207,12 +213,10 @@ class Background():
             masking.
         """
 
-        first_mask = bitmask != 0
-
         # Iterate over the tiers and combine masks.
         for tiernum in range(len(config["TIER_NSIGMA"])):
-            mask = self.tier_mask(img, first_mask, config, tiernum = tiernum)
-            bitmask = np.bitwise_or(bitmask, np.left_shift(mask, tiernum + starting_bit))
+                mask = self.tier_mask(img, (bitmask != 0), scaling, config, tiernum = tiernum)
+                bitmask = np.bitwise_or(bitmask, np.left_shift(mask, tiernum + starting_bit))  
         return bitmask
     
     def estimate_background(self, img, mask, config):
@@ -281,6 +285,13 @@ class Background():
             from.
         mask (numpy.ndarray)
             The 2D image mask where 0 if unmasked, 1 if masked.
+        Returns
+        -------
+        diff (float)
+            The difference in mean values under masked and unmasked
+            pixels.
+        significance (float)
+            The significance of the difference in mean values.
         """
 
         # True if on detector, False if not.
@@ -305,55 +316,9 @@ class Background():
               f"{mean_unmasked:.4f} +- {stderr_unmasked:.4f}")
         print(f"Difference = {diff:.4f} at {significance:.2f} sigma significance")
 
-        return
-    
-    def check_sci_err(self, science_images, error_images):
-        """
-        Check science and error (or background) images have been given in
-        the correct list format.
-        
-        Arguments
-        ---------
-        science_images (str, List[str])
-            The science images to check.
-        error_images (str, List[str])
-            The error (or background) images to check.
+        return diff, significance
 
-        Returns
-        -------
-        science_images (List[str])
-            The science images in the correct format.
-        error_images (List[str])
-            The error (or background) images in the correct format.
-        """
-
-        # If individual images are given convert to lists.
-        if (type(science_images) == str) and (type(error_images) == str):
-            science_images = [science_images]
-            error_images = [error_images]
-        # If not strings or lists raise an error.
-        if (type(science_images) != list) and (type(error_images) != list):
-            raise KeyError(
-                f'Input images should be filepaths or lists of filepaths'
-                f' but have type {type(science_images)} and {type(error_images)}.')
-        
-        # Raise an error if the lists are not of the same length.
-        if len(science_images) != len(error_images):
-            raise KeyError(
-                f'There should be corresponding images of each type but have lengths'
-                f' {len(science_images)} and {len(error_images)}.') 
-        
-        # Check all the filepaths are valid before starting.
-        badpaths = []
-        for image in science_images+error_images:
-            if os.path.isfile(image) == False:
-                badpaths.append(image)
-        if len(badpaths) != 0:
-            raise KeyError(f'The following are not valid files: {badpaths}')
-
-        return science_images, error_images
-
-    def individual_background(self, science_images, error_images, parameters={}, suffix='bkgsub',
+    def individual_background(self, science_images, error_images, weight_images, parameters={}, suffix='bkgsub',
                               replace_sci=False, store_mask=True):
         """
         Perform individual background subtraction with tiered source masking.
@@ -365,6 +330,8 @@ class Background():
             from.
         error_images (str, List[str])
             The corresponding error image(s).
+        weight_images (str, List[str])
+            The corresponding weight image(s).
         parameters (dict)
             Key-value pairs overwritting parameters given in the config
             file.
@@ -382,9 +349,18 @@ class Background():
             Filenames of the generated background subtracted images.
         """
 
-        # Get the science and error images in the correct format.
-        sci_images, err_images = self.check_sci_err(science_images, error_images)
+        # If individual images are given convert to lists.
+        if type(science_images) == str:
+            science_images = [science_images]
+        if type(error_images) == str:
+            error_images = [error_images]
+        if type(weight_images) == str:
+            weight_images = [weight_images]
 
+        # Raise an error if the lists are not of the same length.
+        if (len(science_images) != len(error_images)) or (len(error_images) != len(weight_images)):
+            raise KeyError('There should be corresponding images of each type.')
+        
         # Overwrite some parameters just for this run.
         config = copy.deepcopy(self.config)
         for (key, value) in parameters.items():
@@ -393,17 +369,18 @@ class Background():
                 else:
                     warnings.warn(f'{key} is not a valid parameter. Continuing without updating.',
                                   stacklevel=2)
-
+                    
         # Store the filenames of the background subtracted images for
         # later.
         bkgsub_filenames = []
-        for sci_filename, err_filename in zip(sci_images, err_images):
+        for sci_filename, err_filename, wht_filename in zip(science_images, error_images, weight_images):
 
             print(f'Measuring background of {sci_filename}...')
 
             # Load in the images and header.
             sci, hdr = fits.getdata(sci_filename, header = True)            
             err = fits.getdata(err_filename)
+            wht = fits.getdata(wht_filename)
 
             # Set up a bitmask
             bitmask = np.zeros(sci.shape,np.uint32) # Enough for 32 tiers
@@ -413,11 +390,22 @@ class Background():
             mask = off_detector_mask 
             bitmask = np.bitwise_or(bitmask, np.left_shift(mask,0))
 
+            # Determine the detection scaling of each pixel.
+
+            # First calculate the median weight
+            med_wht = np.median(wht[~mask])
+            # and then scale based on this value.
+            scaling = np.where(wht == 0, np.nan, med_wht/wht)
+
+            # Limit the scaling if required.
+            scaling = np.where(scaling > config['SCALE_U'], config['SCALE_U'], scaling)
+            scaling = np.where(scaling > config['SCALE_L'], config['SCALE_L'], scaling)
+
             # Ring-median filter the image.
             filtered = self.clipped_ring_median_filter(sci, mask, config)
             
             # Mask sources iteratively in tiers
-            bitmask = self.mask_sources(filtered, bitmask, config, starting_bit = 1)
+            bitmask = self.mask_sources(filtered, bitmask, scaling, config, starting_bit = 1)
             mask = (bitmask != 0) 
 
             # Estimate the background using just unmasked regions
@@ -434,14 +422,20 @@ class Background():
 
             # Evaluate the bias under all sources.
             print("Bias under bright sources:")
-            self.evaluate_bias(bkgd, err, mask)
+            bias, sig = self.evaluate_bias(bkgd, err, mask)
+            hdr[f'BIAS_B'] = (bias, 'Bias under all sources.')
+            hdr[f'SIG_B'] = (sig, 'Significance of bias under all sources.')
+
 
             # And just under fainter sources.
             print("\nBias under fainter sources")
             faintmask = np.zeros(sci.shape, bool)
             for t in (3, 4):
                 faintmask = faintmask | (np.bitwise_and(bitmask,2**t) != 0)
-            self.evaluate_bias(bkgd, err, faintmask)
+            bias, sig = self.evaluate_bias(bkgd, err, faintmask)
+            hdr[f'BIAS_F'] = (bias, 'Bias under faint sources.')
+            hdr[f'SIG_F'] = (sig, 'Significance of bias under faint sources.')
+
             
             # Overwrite or create new file.
             if replace_sci == True:
@@ -503,10 +497,13 @@ class Background():
             
         print('Calculating background using merged mask:')
 
-        # Do some checks.
-        science_images, bkgsub_images = self.check_sci_err(science_images, bkgsub_images)
+        # Check that more than one image has been provided.
         if len(science_images) == 1:
             raise KeyError('Only one science image given so not possible to create a merged mask.')
+        # Check lists are the same length.
+        if len(science_images) != len(bkgsub_images):
+            raise KeyError('There should be corresponding images of each type.')
+        # Check WCS index is acceptable.
         if (WCS_filter >= len(science_images)) or (WCS_filter < 0):
             raise ValueError(f'WCS_filter should index science images but has value {WCS_filter}'
                              f' for {len(science_images)} images.')
@@ -609,8 +606,8 @@ class Background():
 
         return        
 
-    def full_background(self, science_images, error_images, parameters={}, suffix='bkgsub',
-                        suffix_merged='mbkgsub', WCS_filter=0, merged_name=None):
+    def full_background(self, science_images, error_images, weight_images, parameters={},
+                        suffix='bkgsub', suffix_merged='mbkgsub', WCS_filter=0, merged_name=None):
         """
         Perform iterative source masking on individual images and 
         measure final background from a merged mask.
@@ -622,6 +619,8 @@ class Background():
             from.
         error_images (List[str])
             The corresponding error images.
+        weight_images (List[str])
+            The corresponding weight images.
         parameters (dict)
             Key-value pairs overwritting parameters given in the config
             file.
@@ -639,8 +638,8 @@ class Background():
         """
 
         # Measure the individual backgrounds.
-        bkgsub_images = self.individual_background(science_images, error_images, parameters, suffix,
-                                                   False, True)
+        bkgsub_images = self.individual_background(science_images, error_images, weight_images, 
+                                                   parameters, suffix, False, True)
 
         # Measure the merged background.
         self.merged_background(science_images, bkgsub_images, parameters, WCS_filter,
