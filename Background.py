@@ -152,6 +152,12 @@ class Background():
             The updated 2D source mask.
         """
 
+        print(f"Tier #{tiernum}:")
+        print(f'  Kernel size = {config["TIER_KERNEL_SIZE"][tiernum]}')
+        print(f'  N-sigma = {config["TIER_NSIGMA"][tiernum]}')
+        print(f'  N-pixels = {config["TIER_NPIXELS"][tiernum]}')
+        print(f'  Dilate size = {config["TIER_DILATE_SIZE"][tiernum]}')
+
         # Calculate a robust RMS.
         background_rms = astrostats.biweight_scale(img[~mask])
 
@@ -160,7 +166,7 @@ class Background():
         background_level = astrostats.biweight_location(img[~mask])
         replaced_img = np.choose(mask,(img,background_level))
 
-        print(f"  Median of ring-median-filtered image = {np.median(img)}")
+        print(f"  Median of ring-median-filtered image = {np.median(img[~mask])}")
         print(f"  Biweight RMS of ring-median-filtered image  = {background_rms}")
 
         # Convolve the image with a 2D Gaussian kernel.
@@ -181,12 +187,6 @@ class Background():
             # Dilate the mask is required.
             footprint = circular_footprint(radius = config["TIER_DILATE_SIZE"][tiernum])
             mask = seg_detect.make_source_mask(footprint = footprint)
-
-        print(f"Tier #{tiernum}:")
-        print(f'  Kernel size = {config["TIER_KERNEL_SIZE"][tiernum]}')
-        print(f'  N-sigma = {config["TIER_NSIGMA"][tiernum]}')
-        print(f'  N-pixels = {config["TIER_NPIXELS"][tiernum]}')
-        print(f'  Dilate size = {config["TIER_DILATE_SIZE"][tiernum]}')
 
         return mask
 
@@ -213,12 +213,10 @@ class Background():
             masking.
         """
 
-        first_mask = bitmask != 0
-
         # Iterate over the tiers and combine masks.
         for tiernum in range(len(config["TIER_NSIGMA"])):
-            mask = self.tier_mask(img, first_mask, scaling, config, tiernum = tiernum)
-            bitmask = np.bitwise_or(bitmask, np.left_shift(mask, tiernum + starting_bit))
+                mask = self.tier_mask(img, (bitmask != 0), scaling, config, tiernum = tiernum)
+                bitmask = np.bitwise_or(bitmask, np.left_shift(mask, tiernum + starting_bit))  
         return bitmask
     
     def estimate_background(self, img, mask, config):
