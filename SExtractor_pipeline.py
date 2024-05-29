@@ -395,7 +395,6 @@ class SExtractor():
         # Create a histogram of aperture magnitudes.
         mags = -2.5 * np.log10((apps['FLUX_APER'][s]*1e-9) / 3631)
         bins = np.linspace(min(mags), max(mags), bins)
-        print(min(mags), max(mags))
         vals, edges = np.histogram(mags, bins = bins)
 
         # Measure the PSF curve of growth and interpolate.
@@ -777,8 +776,6 @@ class SExtractor():
         # Single image with weight.
         if (type(image) == str) and (type(weight) == str):
             basecmd = [self.sexpath, "-c", sexfile, image, '-WEIGHT_IMAGE', weight]
-
-        print(basecmd)
 
         # Run SE using this command and the config parameters.
         self.run_SExtractor(basecmd, img_SEconfig)
