@@ -13,7 +13,7 @@ profound <- setRefClass("profound", fields = list(config_path = "character", con
                           # Store the config filepath.
                           .self$config_path <- config_path
                           # Store config file content.
-                          .self$config <- yaml.load_file("/Users/jt458/profound/profound_config.yml")
+                          .self$config <- yaml.load_file(config_path)
                         },
 
                         extract = function(images, parameters = hash(), outputs = NULL, outdir = NULL) {
@@ -172,13 +172,3 @@ profound <- setRefClass("profound", fields = list(config_path = "character", con
 
                         }
                         ))
-
-gc()
-
-a <- profound$new("/Users/jt458/profound/profound_config.yml")
-
-
-a$extract(c("/Users/jt458/Desktop/masking/ngdeep/ngdeep-grizli-v7.2-f277w-clear_drc_sci_merged.fits", "/Users/jt458/Desktop/masking/ngdeep/ngdeep-grizli-v7.2-f115w-clear_drc_sci.fits"))
-
-rm(list = ls())
-gc()
