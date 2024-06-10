@@ -1,3 +1,6 @@
 .python-version
 image_processing/
 __pycache__
+tests.ipynb
+**/.DS_Store
+.lintr
