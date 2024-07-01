@@ -390,16 +390,31 @@ class Background():
             mask = off_detector_mask 
             bitmask = np.bitwise_or(bitmask, np.left_shift(mask,0))
 
-            # Determine the detection scaling of each pixel.
+            # Scale the detection threshold for low weight regions.
 
             # First calculate the median weight
-            med_wht = np.median(wht[~mask])
-            # and then scale based on this value.
-            scaling = np.where(wht == 0, np.nan, med_wht/wht)
+            wht_mask = wht != 0
+            med_wht = np.median(wht[wht_mask])
 
-            # Limit the scaling if required.
-            scaling = np.where(scaling > config['SCALE_U'], config['SCALE_U'], scaling)
-            scaling = np.where(scaling > config['SCALE_L'], config['SCALE_L'], scaling)
+            # Find the ratio of median weight to weight of each pixel.
+            ratio = np.where(wht == 0, np.nan, med_wht/wht)
+
+            # Default scaling is 1.
+            scaling = np.where(np.isnan(ratio), np.nan, 1)
+
+            # If scaling requested.
+            if config['SCALE_THRESH'] != 'None':
+                print("Scaling threshold based on weight ratios.")
+
+                # Turn on scaling above the provided threshold.
+                above_thresh = ratio > config['SCALE_THRESH']
+
+                # Limit scaling to the 99th percentile of these ratios.
+                percentile = np.percentile(ratio[above_thresh], 99)
+                ratio_capped = np.minimum(ratio[above_thresh], percentile)
+
+                # Calculate the scaling.                                                                                                                                                                                                    
+                scaling[above_thresh] = 1 + (ratio_capped - 1) * (config['SCALE_MAX'] - 1) / (percentile - 1)
 
             # Ring-median filter the image.
             filtered = self.clipped_ring_median_filter(sci, mask, config)
