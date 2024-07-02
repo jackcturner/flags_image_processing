@@ -756,7 +756,7 @@ class SExtractor():
         img_SEconfig['PARAMETERS_NAME'] = parameter_filename
 
         # Check that checkimage directory exists.
-        if img_SEconfig['CHECKIMAGE_NAME'] != None:
+        if img_SEconfig['CHECKIMAGE_TYPE'] != 'NONE':
             dir_name = os.path.dirname(img_SEconfig['CHECKIMAGE_NAME'])
             if os.path.isdir(dir_name) == False:
                 raise KeyError(f'{dir_name} does not exist. Please set CHECKIMAGE_NAME correctly.')
@@ -804,4 +804,4 @@ class SExtractor():
 
         print(f'Completed SExtraction and saved to {outname} \n')
 
-        return
+        return outname

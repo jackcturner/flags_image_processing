@@ -1,7 +1,10 @@
 import os
 import h5py
 import numpy as np
+from numpy.random import uniform
 import matplotlib.pyplot as plt
+import random
+import math
 
 from astropy.io import fits
 from astropy.table import Table
@@ -12,11 +15,63 @@ from regions import Regions
 
 import scipy.ndimage as nd
 import scipy.optimize as opt
+import scipy.stats as st
+from scipy.spatial import cKDTree
 
 from photutils.centroids import centroid_com
 from photutils.aperture import CircularAperture, aperture_photometry
 
 from skimage.measure import block_reduce
+
+def poisson_confidence_interval(counts, p=0.68):
+    """ 
+    Return the upper and lower Poisson confidence limits on a count.
+    
+    Arguments
+    ---------
+    counts (numpy.ndarray)
+        1D array of counts.
+    p (float)
+        The confidence limit to return.
+        
+    Returns
+    -------
+    intervals (numpy.ndarray)
+        2D array of upper and lower confidence limits.
+    """
+    
+    lower = []
+    upper = []
+
+    for n in counts:
+    
+        if n>0:   
+            interval=(st.chi2.ppf((1.-p)/2.,2*n)/2.,st.chi2.ppf(p+(1.-p)/2.,2*(n+1))/2.)       
+        
+        else:
+            
+            #this bit works out the case for n=0
+            
+            ul=(1.-p)/2.
+            
+            prev=1.0
+            for a in np.arange(0.,5.0,0.001):
+            
+                cdf=st.poisson.cdf(n,a)
+            
+                if cdf<ul and prev>ul:
+                    i=a
+            
+                prev=cdf
+            
+            interval=(0.,i)
+        
+        lower.append(interval[0])
+        upper.append(interval[1])
+    
+    intervals = np.column_stack([lower, upper])
+    
+    return intervals
 
 def merge_catalogues(catalogues, labels, new_catalogue = 'merged_catalogue.hdf5'):
     """
@@ -670,7 +725,7 @@ def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels
     Arguments
     ---------
     images (str, List[str])
-        The image(s) tfor which to create the edge mask.
+        The image(s) for which to create the edge mask.
     off_image (float)
         The value indicating an off detector region.
     buffer_size (int)
@@ -745,7 +800,7 @@ def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels
     combined_mask = combined_mask.astype(np.uint8)
 
     hdr = fits.getheader(images[0])
-    fits.writeto(outname, combined_mask, hdr)
+    fits.writeto(outname, combined_mask, hdr, overwrite = True)
 
     return combined_mask
 
