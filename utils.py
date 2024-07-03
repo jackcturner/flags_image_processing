@@ -150,7 +150,7 @@ def weight_to_error(weight_image, error_filename = None):
     hdr['FROMWHT'] = ('T', 'Converted to RMS from weight.')
 
     # Save the error image to a new file.
-    fits.writeto(error_filename,err,header=hdr,overwrite=True)
+    fits.writeto(error_filename , err.astype(np.float32), header = hdr, overwrite = True)
 
     return
 
@@ -181,7 +181,7 @@ def error_to_weight(error_image, weight_filename = None):
     hdr['FROMERR'] = ('T', 'Converted to weight from RMS.')
 
     # Save the weight image to a new file.
-    fits.writeto(weight_filename,wht,header=hdr,overwrite=True)
+    fits.writeto(weight_filename, wht.astype(np.float32), header = hdr, overwrite = True)
 
     return
 
@@ -254,7 +254,7 @@ def generate_error(science, weight, exposure, grow = True, outname = None):
     err = np.where(full_wht==0, 0, 1/np.sqrt(full_wht))
 
     # and save to a fits image.
-    fits.writeto(outname, err, header = wht_header)
+    fits.writeto(outname, err.astype(np.float32), header = wht_header)
 
     return
 
@@ -337,7 +337,7 @@ def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname 
         rebinned_image = np.sqrt(block_reduce(img**2, block_size, np.sum))
 
     # Save the rebinned image as a new FITS file with updated WCS information
-    hdu = fits.PrimaryHDU(rebinned_image)
+    hdu = fits.PrimaryHDU(rebinned_image.astype(np.float32))
     hdu.header.update(wcs_header)
     hdul_rebinned = fits.HDUList([hdu])
     hdu.header["REBIN"] = (source_scale, 'Image has been rebinned from this scale')
@@ -384,8 +384,8 @@ def create_stack(sci_images, wht_images, hdr_index = 0, stack_name = 'stacked_im
     stack_sci /= stack_wht
 
     # Save the images.
-    fits.writeto({stack_name.replace('.fits', '_sci.fits')}, stack_sci, header = sci_hdr, overwrite=True)
-    fits.writeto({stack_name.replace('.fits', '_wht.fits')}, stack_wht, header = wht_hdr, overwrite=True)
+    fits.writeto({stack_name.replace('.fits', '_sci.fits')}, stack_sci.astype(np.float32), header = sci_hdr, overwrite=True)
+    fits.writeto({stack_name.replace('.fits', '_wht.fits')}, stack_wht.astype(np.float32), header = wht_hdr, overwrite=True)
 
     return
 
@@ -712,7 +712,7 @@ def regions_to_mask(image, regions, outname = None):
     mask = mask.to_image(shape = img.shape)
 
     # Save as a fits file.
-    fits.writeto(outname, mask, hdr)
+    fits.writeto(outname, mask.astype(np.int32), hdr)
 
     return
 
@@ -800,7 +800,7 @@ def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels
     combined_mask = combined_mask.astype(np.uint8)
 
     hdr = fits.getheader(images[0])
-    fits.writeto(outname, combined_mask, hdr, overwrite = True)
+    fits.writeto(outname, combined_mask.astype(np.float32), hdr, overwrite = True)
 
     return combined_mask
 

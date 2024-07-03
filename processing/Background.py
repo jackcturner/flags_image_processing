@@ -466,12 +466,12 @@ class Background():
             for (key, value) in config.items():
                 hdr[f'HIERARCH {key}'] = str(value)
 
-            fits.writeto(out_filename, bkgd_subtracted, header = hdr, overwrite = True)
+            fits.writeto(out_filename, bkgd_subtracted.astype(np.float32), header = hdr, overwrite = True)
 
             if store_mask == True:
                 # Create header for mask.
                 wcs = WCS(hdr)
-                hdu_mask = fits.ImageHDU(bitmask,header = wcs.to_header(), name = 'TIERMASK')
+                hdu_mask = fits.ImageHDU(bitmask.astype(np.int32), header = wcs.to_header(), name = 'TIERMASK')
                 # Append as extension to background subtracted file.
                 hdul = fits.open(out_filename)
                 hdul.append(hdu_mask)
@@ -566,7 +566,7 @@ class Background():
         if os.path.dirname(merged_name) != basedir:
             merged_name = f'{basedir}/{os.path.basename(merged_name)}'
 
-        hduout = fits.PrimaryHDU(mask, header = wcs.to_header())
+        hduout = fits.PrimaryHDU(mask.astype(np.float32), header = wcs.to_header())
         hduout.writeto(merged_name, overwrite = True)
 
         # Run final background subtraction on each image using merged
@@ -609,10 +609,10 @@ class Background():
             # If no suffix given, overwrite the original background
             # subtracted image.
             if suffix == None:
-                fits.writeto(bkgimage, bkgsub, header = hdr, overwrite = True)
+                fits.writeto(bkgimage, bkgsub.astype(np.float32), header = hdr, overwrite = True)
             # Otherwise create a new file.
             else:
-                fits.writeto(image.replace(".fits", f"_{suffix}.fits"), bkgsub, header = hdr, 
+                fits.writeto(image.replace(".fits", f"_{suffix}.fits"), bkgsub.astype(np.float32), header = hdr, 
                              overwrite = True) 
 
         # Delete merged mask if required.
