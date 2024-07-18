@@ -705,14 +705,15 @@ def regions_to_mask(image, regions, outname = None):
     combined_region = pixcoords[0]
 
     # Create one unified region and convert it to a mask.
-    for region in pixcoords[1:]:
-        combined_region = combined_region.union(region)
+    if len(pixcoords) > 1:
+        for region in pixcoords[1:]:
+            combined_region = combined_region.union(region)
 
     mask = combined_region.to_mask()
     mask = mask.to_image(shape = img.shape)
 
     # Save as a fits file.
-    fits.writeto(outname, mask.astype(np.int32), hdr)
+    fits.writeto(outname, mask.astype(np.int32), hdr, overwrite = True)
 
     return
 
