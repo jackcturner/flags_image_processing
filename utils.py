@@ -23,6 +23,8 @@ from photutils.aperture import CircularAperture, aperture_photometry
 
 from skimage.measure import block_reduce
 
+from ned_extinction_calc import request_extinctions
+
 def poisson_confidence_interval(counts, p=0.68):
     """ 
     Return the upper and lower Poisson confidence limits on a count.
@@ -705,14 +707,15 @@ def regions_to_mask(image, regions, outname = None):
     combined_region = pixcoords[0]
 
     # Create one unified region and convert it to a mask.
-    for region in pixcoords[1:]:
-        combined_region = combined_region.union(region)
+    if len(pixcoords) > 1:
+        for region in pixcoords[1:]:
+            combined_region = combined_region.union(region)
 
     mask = combined_region.to_mask()
     mask = mask.to_image(shape = img.shape)
 
     # Save as a fits file.
-    fits.writeto(outname, mask.astype(np.int32), hdr)
+    fits.writeto(outname, mask.astype(np.int32), hdr, overwrite = True)
 
     return
 
@@ -849,5 +852,114 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
             if label in f[f'photometry/{band}'].keys():
                 del f[f'photometry/{band}/{label}']
             f[f'photometry/{band}/{label}'] = flag
+
+    return
+
+def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
+    """
+    Query the NED extinction calculator using mean RA and DEC location
+    and apply correction to FLAGS catalogue.
+    
+    Arguments
+    ---------
+    catalogue (str)
+        Path to FLAGS hdf5 catalogue. Flux units should be nJy.
+    replace (bool)
+        Should the original flux values be replaced?
+    suffix (str)
+        If original values are not replaced, create new dataset using
+        this suffix
+    """
+
+    # Translate commonly used filters to the closest match on NED.
+    translate = {'JWST/NIRCam.F070W': 'WFPC2 F702W','JWST/NIRCam.F090W': 'ACS F850LP','JWST/NIRCam.F115W': 'WFC3 F110W',
+                    'JWST/NIRCam.F150W': 'WFC3 F160W','JWST/NIRCam.F200W': 'WFC3 F160W','JWST/NIRCam.F140M': 'WFC3 F140W',
+                    'JWST/NIRCam.F162M': 'UKIRT H','JWST/NIRCam.F182M': 'UKIRT H','JWST/NIRCam.F210M': 'UKIRT K',
+                    'JWST/NIRCam.F277W': 'UKIRT K','JWST/NIRCam.F356W': "UKIRT L",'JWST/NIRCam.F444W': "UKIRT L",
+                    'JWST/NIRCam.F250M': 'UKIRT K','JWST/NIRCam.F300M': "UKIRT L",'JWST/NIRCam.F335M': "UKIRT L",
+                    'JWST/NIRCam.F360M': "UKIRT L",'JWST/NIRCam.F410M': "UKIRT L",'JWST/NIRCam.F430M': "UKIRT L",
+                    'JWST/NIRCam.F460M': "UKIRT L",'JWST/NIRCam.F480M': "UKIRT L",'HST/ACS_WFC.F435W': 'ACS F435W',
+                    'HST/ACS_WFC.F475W': 'ACS F475W','HST/ACS_WFC.F555W': 'ACS F555W','HST/ACS_WFC.F606W': 'ACS	F606W',
+                    'HST/ACS_WFC.F625W': 'ACS F625W','HST/ACS_WFC.F775W': 'ACS F775W','HST/ACS_WFC.F814W': 'ACS F814W',
+                    'HST/WFC3_IR.F098M': 'LSST y','HST/WFC3_IR.F105W': 'WFC3 F105W','HST/WFC3_IR.F110W': 'WFC3 F110W',
+                    'HST/WFC3_IR.F125W': 'WFC3 F125W','HST/WFC3_IR.F140W': 'WFC3 F140W','HST/WFC3_IR.F160W': 'WFC3 F160W'}
+
+    # Read the catalogue.
+    with h5py.File(catalogue, 'r+') as f:
+
+        # Get list of instruments.
+        instruments = list(f['photometry'].keys())
+        # Remove the detection image.
+        if 'detection' in instruments:
+            instruments.remove('detection')
+
+        # Get list of filters.
+        filters = []
+        for instrument in instruments:
+            filters_ = list(f[f'photometry/{instrument}'].keys())
+            for i in filters_:
+                filters_[filters_.index(i)] = f'{instrument}/{i}'
+            filters += filters_
+        
+        # For each filter.
+        for filter in filters:
+
+            # Get the mean RA and DEC.
+            ra = str(np.mean(f[f'photometry/{filter}/ALPHA_SKY'][:]))
+            dec = str(np.mean(f[f'photometry/{filter}/DELTA_SKY'][:]))
+
+            # Determine the closest matching filter.
+            corr_filt = translate[filter]
+
+            # Get the extinction in magnitudes.
+            Alam = request_extinctions(ra, dec, filters=corr_filt)
+
+            # Apply the correction to each flux value.
+            keys = f[f'photometry/{filter}'].keys()
+            for key in keys:
+
+                if ('FLUX' in key) & ('ERR' not in key):
+
+                    # Get the flux in nJy.
+                    flux = f[f'photometry/{filter}/{key}'][:]
+
+                    # Convert to magnitude and apply correction.
+                    mag = (-2.5 * np.log10(flux * 1e-9)) + 8.90
+                    mag -= Alam
+
+                    # Convert back to flux in nJy.
+                    flux_corr = (10**((mag-8.90)/-2.5)) * 1e9
+
+                    # Keep original values if not detected.
+                    flux_corr_ = np.where(flux <= 0, flux, flux_corr)
+
+                    # Add to the catalogue.
+                    if replace == True:
+                        f[f'photometry/{filter}/{key}'] = flux_corr_
+                    else:
+                        f[f'photometry/{filter}/{key}{suffix}'] = flux_corr_
+
+                    # If error is provided, correct by maintaining
+                    # signal to noise ratio.
+                    err_name = f'FLUXERR{key.split("FLUX")[1]}'
+                    if err_name in keys:
+
+                        # The error in nJy.
+                        err = f[f'photometry/{filter}/{err_name}'][:]
+
+                        # Calculate original signal to noise.
+                        s_n = flux/err
+
+                        # Scale error to maintain this.
+                        err_corr = np.where(flux <= 0, err, flux_corr/s_n)
+                        print(err_corr)
+                        print(flux_corr_/err_corr)
+
+                        # Add to the catalogue.
+                        if replace == True:
+                            f[f'photometry/{filter}/{err_name}'] = err_corr
+                        else:
+                            f[f'photometry/{filter}/{err_name}{suffix}'] = err_corr
+                
 
     return
