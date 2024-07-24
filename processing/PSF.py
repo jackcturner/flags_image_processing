@@ -1110,16 +1110,16 @@ class PSF():
             if save_kernel == True:
 
                 # Create the header.
-                hdr = fits.Header()
-                hdr['SOURCE'] = (band, 'Source PSF')
-                hdr['TARGET'] = (target_band, 'Target PSF')
-                hdr['OVERSAMP'] = (config["OVERSAMPLE"], 'Degree of oversampling')
-                hdr['ANGLE_S'] = (config["ANGLE_SOURCE"], 'Angle of source PSF')
-                hdr['ANGLE_T'] = (config["ANGLE_TARGET"], 'Angle of target PSF')
+                hdr_ = fits.Header()
+                hdr_['SOURCE'] = (band, 'Source PSF')
+                hdr_['TARGET'] = (target_band, 'Target PSF')
+                hdr_['OVERSAMP'] = (config["OVERSAMPLE"], 'Degree of oversampling')
+                hdr_['ANGLE_S'] = (config["ANGLE_SOURCE"], 'Angle of source PSF')
+                hdr_['ANGLE_T'] = (config["ANGLE_TARGET"], 'Angle of target PSF')
 
                 outname = os.path.basename(self.filenames[band][0]).replace(
                     ".fits", f"_kernel_{target_band}.fits")
-                fits.writeto(f'{outdir}/{outname}', kernel, header = hdr, overwrite = True)
+                fits.writeto(f'{outdir}/{outname}', kernel, header = hdr_, overwrite = True)
 
             # Construct the diagnostic figure.
             if save_figs == True:
@@ -1184,8 +1184,8 @@ class PSF():
                 plt.savefig(f'{outdir}/{outname}')
                 plt.close()
 
-            # Remove the target PSF file.
-            os.remove(f'{outdir}/target.temp.fits')
+        # Remove the target PSF file.
+        os.remove(f'{outdir}/target.temp.fits')
         
         return
     
