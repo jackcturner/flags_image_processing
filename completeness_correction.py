@@ -37,18 +37,18 @@ def find_matches(small_cat, large_cat):
     distances (List[float])
         The distance between matches in pixels."""
 
-    # Create KD-tree for the larger catalogue
+    # Create KD-tree for the larger catalogue.
     large_tree = cKDTree(large_cat)
     
-    # Query the KD-tree with the positions from the smaller catalogue
+    # Query the KD-tree with the positions from the smaller catalogue.
     distances, indices = large_tree.query(small_cat)
 
-    # Sort indices and reorder distances accordingly
+    # Sort indices and reorder distances accordingly.
     sorted_indices = np.argsort(indices)
     indices = indices[sorted_indices]
     distances = distances[sorted_indices]
     
-    # Return the matched indices and distances
+    # Return the matched indices and distances.
     return indices, distances
 
 def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=None, seg_name=None,
@@ -133,7 +133,7 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
     with fits.open(wht_name) as wht:
             unmasked = unmasked & (wht[0].data != 0)
     with fits.open(seg_name) as seg:
-            unmasked = unmasked & (seg[1].data == 0)
+            unmasked = unmasked & (seg[0].data == 0)
 
     # Find indices of unmasked pixels.
     unmasked_pixels = np.where(unmasked)
