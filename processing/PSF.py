@@ -1237,12 +1237,14 @@ class PSF():
 
             # Convolve the images.
             if config["FFT"] == True:
-                print(' Convolving science image...')
+                print(' Convolving science image with FFT...')
                 convolved_sci = convolve_fft(sci, kernel, allow_huge = True)
+                print(' Convolving error image wit FFT...')
                 convolved_err = convolve_fft(err, kernel, allow_huge = True)
             else:
-                print(' Convolving error image...')
+                print(' Convolving science image...')
                 convolved_sci = convolve(sci, kernel)
+                print(' Convolving error image...')
                 convolved_err = convolve(err, kernel)
 
             # Add some header keywords.
