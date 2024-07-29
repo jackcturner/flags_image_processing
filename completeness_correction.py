@@ -12,7 +12,7 @@ from astropy.table import Table
 from scipy.spatial import cKDTree
 
 from utils import create_edge_mask, poisson_confidence_interval
-from extraction.SExtractor_pipeline import SExtractor
+from extraction import SExtractor
 
 import webbpsf
 os.environ['WEBBPSF_PATH'] = "/Users/jt458/jwst_data/webbpsf-data"
