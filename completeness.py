@@ -10,12 +10,12 @@ from astropy.io import fits
 from astropy.table import Table
 
 from scipy.spatial import cKDTree
+import scipy.ndimage as nd
 
 from utils import create_edge_mask, poisson_confidence_interval
 from extraction import SExtractor
 
 import webbpsf
-os.environ['WEBBPSF_PATH'] = "/Users/jt458/jwst_data/webbpsf-data"
 
 def find_matches(small_cat, large_cat):
     """
@@ -51,10 +51,10 @@ def find_matches(small_cat, large_cat):
     # Return the matched indices and distances.
     return indices, distances
 
-def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=None, seg_name=None,
-                         sex_path='sex', min_sources=1500, density=5, max_distance=6.66,
-                         max_flux=1.5, min_flux=0.5, min_sn=2, border_width=50,
-                         conversion=1/21.15, bins=np.arange(start = 19.75, stop = 32.25, step=0.5)):
+def measure_completeness(
+          sci_name, wht_name, bins, config_name, psf_name=None, filter=None, seg_name=None,
+          dilate=0, border_width=50, sex_path='sex', min_sources=1500, density=5,
+          max_distance=6.66, max_flux=1.5, min_flux=0.5, min_sn=2, conversion=1/21.15):
     """
     Measure the completeness of an image by inserting synthetic sources
     in a range of magnitude bins.
@@ -65,6 +65,8 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
         Path to the fits science image for which to measure completeness.
     wht_name (str)
         Path the corresponding fits weight map.
+    bins (numpy.ndarray)
+        1D array defining the magnitude bin edges.
     config_name (str)
         Path to the Sextractor configuration file to use.
     psf_name (str/ None)
@@ -75,6 +77,10 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
     seg_name (str, None)
         If str, path to Sextractor segmentation map to use as source
         mask. If None, generate using provided parameters.
+    dilate (int)
+        The number of segmentation map dilation iterations.
+    border_width (int)
+        Width of edge mask to generate.
     sex_path (str)
         Path to Sextractor executable.
     min_sources (int)
@@ -89,12 +95,8 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
         The minimum accepted flux ratio for a match.
     min_sn (float)
         The minimum accepted S/N for a match.
-    border_width (int)
-        Width of edge mask to generate.
     conversion (float)
         Multiplicative factor for converting nJy to image units.
-    bins (numpy.ndarray)
-        1D array defining the magnitude bin edges.
 
     Returns
     -------
@@ -106,7 +108,7 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
     
     print(f'Measuring completeness in {os.path.basename(sci_name)}...')
 
-    # Convert the bin centre magnitudes to nJy.
+    # Convert the bin magnitudes to nJy.
     bins = np.array([(10**((m-8.90)/-2.5))*1e9 for m in bins])
     # Store the centres and edges of each bin.
     bins_info = np.column_stack(((bins[:-1] + bins[1:]) / 2, bins[:-1], bins[1:]))
@@ -133,7 +135,9 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
     with fits.open(wht_name) as wht:
             unmasked = unmasked & (wht[0].data != 0)
     with fits.open(seg_name) as seg:
-            unmasked = unmasked & (seg[0].data == 0)
+            seg_mask = (seg[0].data != 0)
+            seg_mask = nd.binary_dilation(seg_mask, iterations=dilate)
+            unmasked = unmasked & (seg_mask == 0)
 
     # Find indices of unmasked pixels.
     unmasked_pixels = np.where(unmasked)
@@ -204,9 +208,9 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
 
                 # Scale the PSF to the desired total flux in image units.
                 # Flux is selected uniformly within bin.
-                psf_ = (psf * (uniform(bin[1], bin[2])/np.sum(psf)))*conversion
+                psf_ = psf * (uniform(bin[1], bin[2])*conversion)
                 flux_psf = np.sum(psf_)
-                 
+
                 # Calculate the bounding box for the source image within the mosaic.
                 x_start = location[0] - psf_.shape[0]//2  
                 x_end = x_start + psf_.shape[0]
@@ -229,7 +233,7 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
             fits.writeto(f'completeness_{n_img}_{len(locations)}.fits', img, hdr, overwrite = True)
 
             # Run the SExtraction on this image.
-            cat = se_run.SExtract(f'completeness_{n_img}_{len(locations)}.fits', wht_name, parameters = {'TO_FLUX':1/conversion}, measurement = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'])
+            cat = se_run.SExtract(f'completeness_{n_img}_{len(locations)}.fits', wht_name, parameters = {'TO_FLUX':1/conversion, 'CHECKIMAGE_TYPE': 'NONE'}, measurement = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'])
 
             with h5py.File(cat) as f:
 
@@ -278,8 +282,8 @@ def measure_completeness(sci_name, wht_name, config_name, psf_name=None, filter=
                 true_flux = true_flux[sorted_order]
 
                 # Apply flux criteria.
-                s_ = (true_flux/conversion / flux < max_flux) & \
-                    (true_flux/conversion / flux > min_flux) & (sn > min_sn)
+                s_ = (flux / (true_flux/conversion) < max_flux) & \
+                    (flux / (true_flux/conversion) > min_flux) & (sn > min_sn)
                 print(f"Number of sources matching flux criteria: {sum(s_)}")
 
             # Record the number of recovered objects.
