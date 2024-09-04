@@ -829,6 +829,8 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
         Name of the Y coordinate dataset.
     """
 
+    mask = fits.getdata(mask)
+
     # Read in the catalogue.
     with h5py.File(catalogue, 'r+') as f:
 
