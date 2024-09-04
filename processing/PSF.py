@@ -1235,12 +1235,14 @@ class PSF():
             sci, sci_hdr = fits.getdata(self.filenames[band][0], header = True)
             err, err_hdr = fits.getdata(self.filenames[band][1], header = True)
 
+            mask = np.isnan(err)
+
             # Convolve the images.
             if config["FFT"] == True:
                 print(' Convolving science image with FFT...')
-                convolved_sci = convolve_fft(sci, kernel, allow_huge = True)
+                convolved_sci = convolve_fft(sci, kernel, allow_huge = True, preserve_nan= True, mask = mask)
                 print(' Convolving error image wit FFT...')
-                convolved_err = convolve_fft(err, kernel, allow_huge = True)
+                convolved_err = convolve_fft(err, kernel, allow_huge = True, preserve_nan= True, mask = mask)
             else:
                 print(' Convolving science image...')
                 convolved_sci = convolve(sci, kernel)
