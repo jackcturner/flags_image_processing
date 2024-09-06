@@ -47,6 +47,9 @@ class SExtractor():
             for entry in yml:
                 content.append(entry)
             self.SEconfig, self.config = content
+        
+        # Catalogue type is fixed.
+        self.SEconfig['CATALOG_TYPE'] = 'ASCII_HEAD'
 
         # The path to the SExtractor executable.
         self.sexpath = sexpath     
