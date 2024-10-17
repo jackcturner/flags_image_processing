@@ -1240,9 +1240,11 @@ class PSF():
             # Convolve the images.
             if config["FFT"] == True:
                 print(' Convolving science image with FFT...')
-                convolved_sci = convolve_fft(sci, kernel, allow_huge = True, preserve_nan= True, mask = mask)
+                convolved_sci = convolve_fft(sci, kernel, allow_huge = True, preserve_nan=True, 
+                                             mask=mask)
                 print(' Convolving error image wit FFT...')
-                convolved_err = convolve_fft(err, kernel, allow_huge = True, preserve_nan= True, mask = mask)
+                convolved_err = convolve_fft(err, kernel, allow_huge = True, preserve_nan=True, 
+                                             mask=mask)
             else:
                 print(' Convolving science image...')
                 convolved_sci = convolve(sci, kernel)
@@ -1256,8 +1258,8 @@ class PSF():
             err_hdr['KERNEL'] = (target_band, 'Convolved with this kernel')
 
             # Ensure off detector region values don't change.
-            convolved_sci[np.isnan(err)] = 0
-            convolved_err[np.isnan(err)] = np.nan
+            convolved_sci[mask] = 0
+            convolved_err[mask] = np.nan
 
             # Save the convloved images.
             outname = os.path.basename(self.filenames[band][0]).replace(
