@@ -1,3 +1,6 @@
+#!/usr/bin/env Rscript
+
+# Import the relevent libraries.
 library(ProFound)
 library(Rfits)
 library(Rwcs)
@@ -5,9 +8,53 @@ library(hash)
 library(yaml)
 library(glue)
 library(rhdf5)
+library(stringr)
 
-# Defining profound class.
-profound <- setRefClass("profound", fields = list(config_path = "character", config = "list"),
+# Function for identifying and replacing environment variables.
+expand_env_var <- function(string) {
+  pattern <- "\\$\\{?([A-Za-z_][A-Za-z0-9_]*)\\}?"
+
+  str_replace_all(string, pattern, function(match) {
+    var_name <- gsub("\\$\\{?([A-Za-z_][A-Za-z0-9_]*)\\}?", "\\1", match)
+    Sys.getenv(var_name, unset = "")
+  })
+}
+
+# Function to parse command-line arguments.
+parse_args <- function(args) {
+
+  # Initialize an empty list to store the arguments
+  arg_list <- list()
+
+  # Loop through each argument
+  for (arg in args) {
+    # Split the argument on '='
+    parts <- strsplit(arg, "=")[[1]]
+
+    # Ensure we have exactly two parts.
+    if (length(parts) == 2) {
+      arg_name <- parts[1]
+      arg_value <- parts[2]
+
+      # Try to convert the value to numeric if possible.
+      numeric_value <- suppressWarnings(as.numeric(arg_value))
+
+      # Store the argument in the list, convert to numeric if it's a valid number.
+      if (!is.na(numeric_value)) {
+        arg_list[[arg_name]] <- numeric_value
+      } else {
+        arg_list[[arg_name]] <- arg_value
+      }
+    } else {
+      warning(paste("Invalid argument format:", arg))
+    }
+  }
+  return(arg_list)
+}
+
+# This is the main ProFound class.
+# Written to be useable directly from R if required.
+ProFound <- setRefClass("profound", fields = list(config_path = "character", config = "list"),
 
                         methods = list(initialize = function(config_path) {
                           # Store the config filepath.
@@ -16,7 +63,7 @@ profound <- setRefClass("profound", fields = list(config_path = "character", con
                           .self$config <- yaml.load_file(config_path)
                         },
 
-                        extract = function(images, parameters = hash(), outputs = NULL, outdir = NULL) {
+                        extract = function(science, parameters = hash(), outputs = NULL, outdir = NULL) {
 
                           # If no output directory given, use the current directory.
                           if (is.null(outdir) == TRUE) {
@@ -35,11 +82,17 @@ profound <- setRefClass("profound", fields = list(config_path = "character", con
                           # Store the config as is for saving as hdf5 attributes.
                           att_config <- config
 
-                          # Convert string Infs to objects.
                           for (key in names(config)) {
                             if (typeof(config[[key]]) == "character") {
+                              # Convert string Infs to objects.
                               if (config[[key]] == "Inf") {
                                 config[[key]] <- Inf
+                                # Convert "None" to NULL
+                              } else if (config[[key]] == "None") {
+                                config[[key]] <- NULL
+                                # Expand environment variables.
+                              } else {
+                                config[[key]] <- expand_env_var(config[[key]])
                               }
                             }
                           }
@@ -65,24 +118,24 @@ profound <- setRefClass("profound", fields = list(config_path = "character", con
                           }
 
                           # If only one image is given, use it as detection and measurement.
-                          if (length(images) == 1) {
+                          if (length(science) == 1) {
                             print("Running in single image mode.")
-                            sci <- Rfits_read_image(images)
+                            sci <- Rfits_read_image(science)
                             input <- list(sci, sci)
-                            cat_name <- glue("{outdir}/{gsub('.fits', '.hdf5', basename(images))}")
+                            cat_name <- glue("{outdir}/{gsub('.fits', '_profound.hdf5', basename(science))}")
 
                             # If two are given, the first is the detection image, second is the measurement.
-                          } else if (length(images) == 2) {
+                          } else if (length(science) == 2) {
                             print("Running in double image mode.")
-                            det <- Rfits_read_image(unlist(images[1]))
-                            sci <- Rfits_read_image(unlist(images[2]))
+                            det <- Rfits_read_image(unlist(science[1]))
+                            sci <- Rfits_read_image(unlist(science[2]))
                             input <- list(det, sci)
-                            cat_name <- glue("{outdir}/{gsub('.fits', '.hdf5', basename(unlist(images[2])))}")
+                            cat_name <- glue("{outdir}/{gsub('.fits', '_profound.hdf5', basename(unlist(science[2])))}")
                             rm(det)
 
                             # Else, raise an error.
                           } else {
-                            stop("images is not in an acceptable format. Should either be a path to a measurement image 
+                            stop("science is not in an acceptable format. Should either be a path to a measurement image 
                             or a list containing the paths to a detection and measurement image.")
                           }
                           hdr <- sci$keyvalues
@@ -157,6 +210,7 @@ profound <- setRefClass("profound", fields = list(config_path = "character", con
                           if (config[["keepsegims"]] == TRUE) {
                             segims <- profound_run$segimlist
                             names <- profound_run$multibands
+
                             # Function to save each image to its corresponding filename
                             save_image <- function(image_, filename_) {
                               Rfits_write_image(image_, gsub(".hdf5", glue("_{filename_}.fits"), cat_name), keyvalues = hdr)
@@ -172,3 +226,40 @@ profound <- setRefClass("profound", fields = list(config_path = "character", con
 
                         }
                         ))
+
+# Below is designed to be used with Python wrapper profound.py or running
+# from the command line. This should be removed if running purely with R.
+
+# Get the command-line arguments.
+args <- commandArgs(trailingOnly = TRUE)
+arg_list <- parse_args(args)
+
+# Initalise the profound object using the config path.
+p_run <- ProFound(arg_list[["config_path"]])
+
+# Get the image paths in the correct format.
+if ("img2" %in% names(arg_list)) {
+  science <- list(arg_list[["img1"]], arg_list[["img2"]])
+} else {
+  science <- arg_list[["img1"]]
+}
+
+# Get the requested outputs.
+if (arg_list[["outputs"]] == "None") {
+  outputs <- NULL
+} else {
+  outputs <- strsplit(outputs, ",")[[1]]
+}
+
+# Pass additional parameters.
+`%notin%` <- Negate(`%in%`)
+
+parameters <- hash()
+for (key in names(arg_list)) {
+  if (key %notin% c("img1", "img2", "outputs", "outdir", "config_path")) {
+    parameters[[key]] <- arg_list[[key]]
+  }
+}
+
+# Finally, run ProFound.
+p_run$extract(science, parameters, outputs, arg_list[["outdir"]])
