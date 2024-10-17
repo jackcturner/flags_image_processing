@@ -581,6 +581,7 @@ class Background():
 
             # Combined the merged and border mask.
             merged_mask = fits.getdata(merged_name)
+            merged_mask = merged_mask.astype(bool)
             sourcemask = merged_mask | bordermask
             mask = sourcemask != 0
 
