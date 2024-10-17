@@ -210,7 +210,7 @@ def generate_error(science, weight, exposure, grow = True, outname = None):
 
     # Set output filename.
     if outname == None:
-        outname = f'{science.remove_suffix(".fits")}_err.fits'
+        outname = f'{science.removesuffix(".fits")}_err.fits'
 
     # Load in each image.
     sci = fits.getdata(science)
@@ -318,8 +318,8 @@ def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname 
 
     # Read the FITS file
     with fits.open(input_fits) as hdul:
-        img = hdul[1].data
-        wcs = WCS(hdul[1].header)
+        img = hdul[0].data
+        wcs = WCS(hdul[0].header)
 
     # Calculate the scale factor for resizing
     scale_factor = int(target_scale/source_scale)
@@ -335,8 +335,12 @@ def rebin_image(input_fits, source_scale, target_scale, method = 'sum', outname 
     # Rebin the image.
     if method == 'sum':
         rebinned_image = block_reduce(img, block_size, np.sum)
-    if method == 'quad':
+    elif method == 'quad':
         rebinned_image = np.sqrt(block_reduce(img**2, block_size, np.sum))
+    elif method == 'mean':
+        rebinned_image = block_reduce(img/(scale_factor**2), block_size, np.sum)
+    else:
+        raise KeyError(f'{method} is not an available method')
 
     # Save the rebinned image as a new FITS file with updated WCS information
     hdu = fits.PrimaryHDU(rebinned_image.astype(np.float32))
@@ -491,6 +495,8 @@ def measure_curve_of_growth(image, radii, position=None, norm=True, show=False):
     profile (numpy.ndarray)
         The value of the profile at each radius.
     """
+
+    image = fits.getdata(image)
 
     # Calculate the centroid of the source.
     if type(position) == type(None):
