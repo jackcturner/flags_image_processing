@@ -54,7 +54,8 @@ def find_matches(small_cat, large_cat):
 def measure_completeness(
           sci_name, wht_name, bins, config_name, psf_name=None, filter=None, seg_name=None,
           dilate=0, border_width=50, sex_path='sex', min_sources=1500, density=5,
-          max_distance=6.66, max_flux=1.5, min_flux=0.5, min_sn=2, conversion=1/21.15):
+          max_distance=6.66, max_flux=1.5, min_flux=0.5, min_sn=2, conversion=1/21.15, 
+          pixel_scale=0.03):
     """
     Measure the completeness of an image by inserting synthetic sources
     in a range of magnitude bins.
@@ -136,16 +137,20 @@ def measure_completeness(
             unmasked = unmasked & (wht[0].data != 0)
     with fits.open(seg_name) as seg:
             seg_mask = (seg[0].data != 0)
-            seg_mask = nd.binary_dilation(seg_mask, iterations=dilate)
+            if dilate > 0:
+                seg_mask = nd.binary_dilation(seg_mask, iterations=dilate)
             unmasked = unmasked & (seg_mask == 0)
 
     # Find indices of unmasked pixels.
     unmasked_pixels = np.where(unmasked)
     unmasked_coordinates = list(zip(unmasked_pixels[0], unmasked_pixels[1]))
 
-    # Get the total unmasked area.
+    # Get the total unmasked area in arcmin.
     hdr = fits.getheader(sci_name)
-    total_area = np.sum(unmasked)*(hdr['PIXAR_A2']/3600)
+    try:
+        total_area = np.sum(unmasked)*(hdr['PIXAR_A2']/3600)
+    except:
+        total_area = np.sum(unmasked)*((pixel_scale**2)/3600)
 
     # If no PSF provided, generate using WebbPSF.
     if psf_name == None:
@@ -208,8 +213,8 @@ def measure_completeness(
 
                 # Scale the PSF to the desired total flux in image units.
                 # Flux is selected uniformly within bin.
-                psf_ = psf * (uniform(bin[1], bin[2])*conversion)
-                flux_psf = np.sum(psf_)
+                flux_psf = uniform(bin[1], bin[2])
+                psf_ = psf * flux_psf * conversion
 
                 # Calculate the bounding box for the source image within the mosaic.
                 x_start = location[0] - psf_.shape[0]//2  
@@ -226,14 +231,14 @@ def measure_completeness(
                 # Add the source to the mosaic.
                 img[x_start:x_end, y_start:y_end] += psf_
 
-                # add to the table
+                # add to the table with the flux in nJy.
                 source_table.add_row([i, location[1], location[0], flux_psf])
                         
             # Save the image.
             fits.writeto(f'completeness_{n_img}_{len(locations)}.fits', img, hdr, overwrite = True)
 
             # Run the SExtraction on this image.
-            cat = se_run.SExtract(f'completeness_{n_img}_{len(locations)}.fits', wht_name, parameters = {'TO_FLUX':1/conversion, 'CHECKIMAGE_TYPE': 'NONE'}, measurement = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'])
+            cat = se_run.SExtract(f'completeness_{n_img}_{len(locations)}.fits', wht_name, parameters = {'TO_FLUX':1/conversion, 'CHECKIMAGE_TYPE': 'NONE'}, output = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'])
 
             with h5py.File(cat) as f:
 
@@ -282,8 +287,7 @@ def measure_completeness(
                 true_flux = true_flux[sorted_order]
 
                 # Apply flux criteria.
-                s_ = (flux / (true_flux/conversion) < max_flux) & \
-                    (flux / (true_flux/conversion) > min_flux) & (sn > min_sn)
+                s_ = (flux / true_flux < max_flux) & (flux / true_flux > min_flux) & (sn > min_sn)
                 print(f"Number of sources matching flux criteria: {sum(s_)}")
 
             # Record the number of recovered objects.
