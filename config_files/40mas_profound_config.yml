@@ -6,22 +6,22 @@ pixscale: 0.04    # The pixel scale of the image. If 1, output quntities per pix
 #-----------
 sky: 0    # Estimate of the absolute sky level. NULL to compute internally.
 skyRMS: NULL    # Estimate of the RMS of the sky. NULL to compute internally.
-box: 100    # The sky estimate box size of the detection and measurement images.
-grid: 100    # The resolution of the background grid to estimate the detection and measurement sky.
+box: 75    # The sky estimate box size of the detection and measurement images.
+grid: 75    # The resolution of the background grid to estimate the detection and measurement sky.
 
 redosegim: FALSE    # Should the segmentation map be modified using the interim 'better sky'?
 redosky: FALSE   # Should the sky and sky RMS grids be re-computed using the final segmentation map?
-redoskysize: 21    # The width/diameter of the dilation kernel to apply to the object mask before performing the initial and final aggressively masked sky estimates. [pixels]
+redoskysize: 8    # The width/diameter of the dilation kernel to apply to the object mask before performing the initial and final aggressively masked sky estimates. [pixels]
 
 type: bicubic    # The type of interpolation to use. (bilinear, bicubic)
 skytype: median    # The type of sky level estimator used. (median, mean, mode, converge)
-skyRMStype: quanlo    # The type of sky level estimator used. (quanlo, quanhi, quanboth, sd, converge)
+skyRMStype: sd    # The type of sky level estimator used. (quanlo, quanhi, quanboth, sd, converge)
 conviters: 100    # Number of iterative sky convergence steps when using "converge".
 roughpedestal: TRUE    # When the initial "rough sky" is computed, should only a pedestal be used for the sky/skyRMS?
 sigmasel: 1    # The quantile to use when trying to estimate the true standard-deviation of the sky distribution.
 
-skypixmin: 5000    # The minimum number of sky pixels desired each box.
-boxadd: 50    # The dimensions to add to the box to capture more pixels if "skypixmin" has not been achieved. 
+skypixmin: 562    # The minimum number of sky pixels desired in each box.
+boxadd: 37    # The dimensions to add to the box to capture more pixels if "skypixmin" has not been achieved. 
 boxiters: 4    # The number of box+boxadd iterations to attempt.
 
 iterskyloc: FALSE    # Should the last segment dilation be used to estimate a local sky value?
@@ -40,14 +40,14 @@ gain: NULL    # The gain of the detection and measurement images.
 segim: NULL    # Path to pre-computed segmentation map. If NULL, compute internally.
 iters_det: 6    # The number of curve of growth dilations that should be made to the detection image.
 skycut: 1.5    # The detection threshold in units of the skyRMS.
-pixcut: 7    # The number of pixels required to identify an object.
+pixcut: 5    # The number of pixels required to identify an object.
 tolerance: 15    # The minimum height of the object in the units of skyRMS between its highest point and the point where it contacts another object.
 reltol: -10    # A modifier to "tolerance" modifying it by the ratio of the segment peak flux divided by the saddle point flux to the power "reltol".
 ext: 1    # Radius of the neighbourhood in pixels for the detection of neighbouring objects.
 cliptol: Inf    # If sci-sky/RMS is above this level where segments touch then they are always merged.
 
 smooth: TRUE    # Should the image be istropically smoothed?
-sigma: 1    # Standard deviation of the smoothing.
+sigma: 3    # Standard deviation of the smoothing.
 
 SBlim: NULL    # The surface brightness threshold to apply. [mag/arcsec^2]
 SBdilate: 1    # How many surface brightness mags beyond the sky RMS to push the dilation process.
@@ -60,7 +60,7 @@ masking: or    # How to deal with masked regions. (and, or)
 
 dotot: TRUE    # Should dilated segment total photometry be computed.
 iters_tot: 2    # The number of curve of additional growth dilations that should be made above the dilated detection segmentation map.
-sizes_tot: 5    # The width/diameter of the dilation kernel in pixels.
+sizes_tot: 3    # The width/diameter of the dilation kernel in pixels.
 
 docol: FALSE    # Should non-dilated segment colour photometry be computed?
 groupby_mul: segim_orig    # How should the grouped segmentation map be formed that will produce the debelending for cat_tot and cat_col? (segim, segim_orig)
@@ -76,13 +76,14 @@ pixelcov: FALSE    # Should pixel covariance be considered when computing errors
 
 # Deblending
 #-----------
-deblend: FALSE    # Should total segment flux be deblended?
+deblend: TRUE    # Should total segment flux be deblended?
 df: 3    # Degrees of freedom for the deblending non-parametric spline fitting.
 radtrunc: 2    # The maximum allowed radius beyond the edge-most segment pixel to consider when deblending.
 Ndeblendlim: Inf    # The limit for the number of pixels to consider in a deblending complex.
 iterative: FALSE    # Should each segment profile fit be subtracted as it goes along?
 watershed: ProFound    # The funciton to use to achieve the watershed deblend. (ProFound, EBImage)
 deblendtype: fit    # The type of deblending to use. (fit, gauss, psf)
+
 psf: NULL    # Path to file storing psf used for deblending.
 fluxweight: sum    # Flux weighting to use with PSF deblending. (sum, peak, none)
 convtype: brute    # The type on convolver to use. (brute, fftw)
@@ -102,7 +103,7 @@ offset: 1    # The distance to offset when searching for nearby segments. [pixel
 
 haralickstats: FALSE    # If TRUE then the Haralick texture statistics are computed.
 
-keepsegims: TRUE
+keepsegims: FALSE
 
 lowmemory: FALSE    # If TRUE then a low memory mode of ProFound will be used.
 

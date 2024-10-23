@@ -4,3 +4,4 @@ __pycache__
 tests.ipynb
 **/.DS_Store
 .lintr
+ned_extinction_calc/

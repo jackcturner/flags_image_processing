@@ -12,13 +12,16 @@ from scipy.stats import median_abs_deviation
 
 from astropy.table import Table
 from astropy.io import ascii, fits
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import sigma_clipped_stats, SigmaClip, gaussian_fwhm_to_sigma
+from astropy.convolution import Gaussian2DKernel, Tophat2DKernel, convolve_fft
 from astropy.wcs import WCS
 from astropy.wcs.utils import pixel_to_skycoord
 
-from photutils.utils import ImageDepth
-
 import emcee
+
+import photutils.background as pb
+from photutils.segmentation import detect_sources, deblend_sources, SourceCatalog
+from photutils.utils import ImageDepth
 
 import sep
 
@@ -51,6 +54,9 @@ class SExtractor():
             for entry in yml:
                 content.append(entry)
             self.SEconfig, self.config = content
+
+        # Catalogue type is fixed.
+        self.SEconfig['CATALOG_TYPE'] = 'ASCII_HEAD'
 
         # The path to the SExtractor executable.
         self.sexpath = sexpath     
@@ -304,10 +310,10 @@ class SExtractor():
         return outname
 
     def measure_depth(self, sci_filename, err_filename, mask_filename, radius, psf_filename, 
-                      max_apers=50, max_iters=50000, bins=20, outdir='./'):
+                      max_apers=50, max_iters=50000, outdir='./'):
         """
-        Use randomly placed apertures to measure the 5-sigma depth and
-        noise distribution of an image.
+        Use randomly placed apertures to measure the 5-sigma min, max
+        and average depth of an image.
         
         Arguments
         ---------
@@ -325,8 +331,6 @@ class SExtractor():
             The maximum number of apertures to place.
         max_iters (int)
             The maximun attempts at finding a non overlapping location.
-        bins (int)
-            The number of bins to use for the noise distribution.
         outdir (str)
             The directory in which to save temporary files.
         
@@ -334,10 +338,10 @@ class SExtractor():
         -------
         depth_5 (float)
             The 5-sigma depth of the image.
-        vals (numpy.ndarray)
-            Values of the noise histogram bins.
-        edges (numpy.ndarray)
-            Edges of the noise histogram bins.
+        min (float)
+            The minimum measured depth.
+        max (float)
+            The maximum measured depth.
         """
         
         # Get the config parameters.
@@ -367,6 +371,7 @@ class SExtractor():
 
         # Add the correct name and aperture diameters to the command line arguments.
         SEconfig_depth['CATALOG_NAME'] = f'{outdir}det_apertures.temp.cat'
+        SEconfig_depth['WEIGHT_TYPE'] = 'MAP_RMS'
         SEconfig_depth['PHOT_APERTURES'] = str(round(radius*2, 2))
 
         # Write the output parameters to a text file Just need aperture flux and number.
@@ -396,11 +401,6 @@ class SExtractor():
         s = (apps['FLUX_APER'] != 0) & (~np.isnan(apps['FLUX_APER']))
         mad = median_abs_deviation(apps['FLUX_APER'][s], nan_policy = 'omit') * 1.48
 
-        # Create a histogram of aperture magnitudes.
-        mags = -2.5 * np.log10((apps['FLUX_APER'][s]*1e-9) / 3631)
-        bins = np.linspace(min(mags), max(mags), bins)
-        vals, edges = np.histogram(mags, bins = bins)
-
         # Measure the PSF curve of growth and interpolate.
         psf = fits.getdata(psf_filename)
         radii = np.arange(0.1, psf.shape[0], 1)
@@ -412,14 +412,20 @@ class SExtractor():
         # used and convert to 5 sigma.
         mad *= 5/f(radius)
 
+        # Also calculate the minimum and maximum depths.
+        max = 5*np.min(apps['FLUX_APER'][s])/f(radius)
+        min = 5*np.max(apps['FLUX_APER'][s])/f(radius)
+
         # Assuming units of nJy, calculate the 5 sigma limit in
         # magnitudes.
         depth_5 = -2.5 * np.log10((mad*1e-9) / 3631)
+        max = -2.5 * np.log10((max*1e-9) / 3631)
+        min = -2.5 * np.log10((min*1e-9) / 3631)
 
         # Delete the SExtractor catalog.
         os.remove(SEconfig_depth['CATALOG_NAME'])
 
-        return depth_5, vals, edges
+        return depth_5, min, max
     
     def measure_uncertainty(self, sci_filename, err_filename, seg_filename, SEconfig, config,
                             outdir):
@@ -681,13 +687,13 @@ class SExtractor():
 
         return
 
-    def SExtract(self, image, weight=None, parameters={}, measurement=['FLUX_AUTO'], outdir='./'):
+    def SExtract(self, science, weight=None, parameters={}, output=['FLUX_AUTO'], outdir='./'):
         """
         Run SExtractor in any of its standard modes.
 
         Arguments
         ---------
-        image (str, List[str])
+        science (str, List[str])
             If str, the filename of the image to SExtract.
             If a List[str] filename of detection and measurement images.
         weight (None, str, List[str])
@@ -696,7 +702,7 @@ class SExtractor():
         parameters (dict)
             Key-value pairs overwritting parameters in the config file 
             just for this run.
-        measurement (list)
+        output (list)
             List of output parameters to save.
         outdir (str)
             Directory in which to store outputs. 
@@ -732,11 +738,11 @@ class SExtractor():
                               ' value.', stacklevel = 2)
             
 		# Set the catalogue name based on the measurement image.
-        if type(image) == list:
-            name = os.path.splitext(os.path.basename(image[1]))[0]
+        if type(science) == list:
+            name = os.path.splitext(os.path.basename(science[1]))[0]
             img_SEconfig['CATALOG_NAME'] = f'{outdir}/{name}.cat'
         else:
-            name = os.path.splitext(os.path.basename(image))[0]
+            name = os.path.splitext(os.path.basename(science))[0]
             img_SEconfig['CATALOG_NAME'] = f'{outdir}/{name}.cat'
         print(f'SExtracting {os.path.basename(img_SEconfig["CATALOG_NAME"])[:-4]}...')
             
@@ -744,8 +750,8 @@ class SExtractor():
         # if required.
         if img_config['EMPIRICAL'] == True:
             for i in ['A_IMAGE','B_IMAGE','KRON_RADIUS', 'X_IMAGE', 'Y_IMAGE']:
-                if i not in measurement:
-                    measurement.append(i)
+                if i not in output:
+                    output.append(i)
 
             # Requires segmentation image so set if not requested.
             if img_SEconfig['CHECKIMAGE_TYPE'] != 'SEGMENTATION':
@@ -756,7 +762,7 @@ class SExtractor():
                               ' Other requested images will not be produced.', stacklevel = 2)
         
         # Write the output parameters to a text file.
-        parameter_filename = self.write_params(measurement, outdir)
+        parameter_filename = self.write_params(output, outdir)
         img_SEconfig['PARAMETERS_NAME'] = parameter_filename
 
         # Check that checkimage directory exists.
@@ -768,18 +774,18 @@ class SExtractor():
         # Generate the base SExtractor command based on the mode.
 
         # Two image with weights.
-        if (type(image) == list) and (type(weight) == list):
-            basecmd = [self.sexpath, "-c", sexfile, image[0], image[1], '-WEIGHT_IMAGE',
+        if (type(science) == list) and (type(weight) == list):
+            basecmd = [self.sexpath, "-c", sexfile, science[0], science[1], '-WEIGHT_IMAGE',
                        f'{weight[0]},{weight[1]}']
         # Two image without weights.
-        if (type(image) == list) and (type(weight) == type(None)):
-            basecmd = [self.sexpath, "-c", sexfile, image[0], image[1]]
+        if (type(science) == list) and (type(weight) == type(None)):
+            basecmd = [self.sexpath, "-c", sexfile, science[0], science[1]]
         # Single image without weight.
-        if (type(image) == str) and (type(weight) == type(None)):
-            basecmd = [self.sexpath, "-c", sexfile, image]
+        if (type(science) == str) and (type(weight) == type(None)):
+            basecmd = [self.sexpath, "-c", sexfile, science]
         # Single image with weight.
-        if (type(image) == str) and (type(weight) == str):
-            basecmd = [self.sexpath, "-c", sexfile, image, '-WEIGHT_IMAGE', weight]
+        if (type(science) == str) and (type(weight) == str):
+            basecmd = [self.sexpath, "-c", sexfile, science, '-WEIGHT_IMAGE', weight]
 
         # Run SE using this command and the config parameters.
         self.run_SExtractor(basecmd, img_SEconfig)
@@ -790,11 +796,11 @@ class SExtractor():
 
         # Begin uncertainty estimation if needed.
         if img_config['EMPIRICAL'] == True:
-            if (type(image) == str):
-                self.measure_uncertainty(image, weight, img_SEconfig['CHECKIMAGE_NAME'],
+            if (type(science) == str):
+                self.measure_uncertainty(science, weight, img_SEconfig['CHECKIMAGE_NAME'],
                                          img_SEconfig, img_config, outdir)
             else:
-                self.measure_uncertainty(image[1], weight[1], img_SEconfig['CHECKIMAGE_NAME'],
+                self.measure_uncertainty(science[1], weight[1], img_SEconfig['CHECKIMAGE_NAME'],
                                          img_SEconfig, img_config, outdir)
 
         # Convert to flux if required.
@@ -1059,18 +1065,18 @@ class SEP():
         return flux, fluxerr, flag
 
     
-    def extract(self, images, weights=None, parameters = {}, outputs=None, outdir='./'):
+    def extract(self, science, weight=None, parameters = {}, outputs=None, outdir='./'):
         """
         Main function for extracting sources and measuring photometry 
         in a science image.
         
         Arguments
         ---------
-        images (str, List[str])
+        science (str, List[str])
             If string, path to single image from which to detect and 
             measure sources. If List[str], path to detection image as the 
             first entry and measurement as the second.
-        weights (None, str, List[str])
+        weight (None, str, List[str])
             The corresponding weight images for detection.
             If None, use global background RMS for weighting.
         parameters (dict)
@@ -1102,10 +1108,10 @@ class SEP():
 
         # Process the science images in advance.
         # Convert to list if not already.
-        if isinstance(images, list):
-            sci_imgs = images
+        if isinstance(science, list):
+            sci_imgs = science
         else:
-            sci_imgs = [images]
+            sci_imgs = [science]
         
         # Store headers and measured backgrounds.
         hdrs = []
@@ -1126,29 +1132,29 @@ class SEP():
         # Now work out the type of extraction.
 
         # Two image with weights.
-        if (len(sci_imgs) == 2) and (type(weights) == list):
+        if (len(sci_imgs) == 2) and (type(weight) == list):
             print('Starting in dual image mode with weighting.')
-            cat_name = f'{outdir}/{os.path.basename(images[1]).removesuffix(".fits")}.hdf5'
-            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, weights[0], outdir = outdir)
-            flux, fluxerr, flag = self.measure_photometry(sci_imgs[1], config, segmap, cat, weights[1])
-        # Two image without weights.
-        elif (len(sci_imgs) == 2) and (type(weights) == type(None)):
+            cat_name = f'{outdir}/{os.path.basename(science[1]).removesuffix(".fits")}.hdf5'
+            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, weight[0], outdir = outdir)
+            flux, fluxerr, flag = self.measure_photometry(sci_imgs[1], config, segmap, cat, weight[1])
+        # Two image without weight.
+        elif (len(sci_imgs) == 2) and (type(weight) == type(None)):
             print('Starting in dual image mode.')
-            cat_name = f'{outdir}/{os.path.basename(images[1]).removesuffix(".fits")}.hdf5'
+            cat_name = f'{outdir}/{os.path.basename(science[1]).removesuffix(".fits")}.hdf5'
             cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, bkg = bkgs[0], outdir = outdir)
             flux, fluxerr, flag = self.measure_photometry(sci_imgs[1], config, segmap, cat, bkg = bkgs[1])
         # Single image without weight.
-        elif (len(sci_imgs) == 1) and (type(weights) == type(None)):
+        elif (len(sci_imgs) == 1) and (type(weight) == type(None)):
             print('Starting in single image mode.')
-            cat_name = f'{outdir}/{os.path.basename(images).removesuffix(".fits")}.hdf5'
+            cat_name = f'{outdir}/{os.path.basename(science).removesuffix(".fits")}.hdf5'
             cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, bkg = bkgs[0], outdir = outdir)
             flux, fluxerr, flag = self.measure_photometry(sci_imgs[0], config, segmap, cat, bkg = bkgs[0])
         # Single image with weight.
-        elif (len(sci_imgs) == 1) and (type(weights) == str):
+        elif (len(sci_imgs) == 1) and (type(weight) == str):
             print('Starting in single image mode with weighting.')
-            cat_name = f'{outdir}/{os.path.basename(images).removesuffix(".fits")}.hdf5'
-            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, weights, outdir = outdir)
-            flux, fluxerr, flag = self.measure_photometry(sci_imgs[0], config, segmap, cat, weights)
+            cat_name = f'{outdir}/{os.path.basename(science).removesuffix(".fits")}.hdf5'
+            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, weight, outdir = outdir)
+            flux, fluxerr, flag = self.measure_photometry(sci_imgs[0], config, segmap, cat, weight)
 
         # # Add these measurements to the catalogue.
         cat['FLUX_AUTO'] = flux
@@ -1181,3 +1187,370 @@ class SEP():
         print(f'All done and saved to {cat_name}')
 
         return
+
+class photuitls():
+
+    def __init__(self, config_file):
+        """__init__ method for photutils.
+
+        Arguments
+        ---------
+        config_file (str)
+            Path to ".yml" configuration file.
+        """
+
+        # Store the configuration file path
+        self.configfile = config_file
+
+        # and the content.
+        with open(self.configfile, 'r') as file:
+            yml = yaml.safe_load_all(file)
+            content = []
+            for entry in yml:
+                content.append(entry)
+            self.config = content[0]
+
+        self.output_names = [
+            'area', 'background_centroid', 'background_mean', 'background_sum', 'bbox_xmax',
+              'bbox_xmin', 'bbox_ymax', 'bbox_ymin', 'centroid','centroid_quad', 'centroid_win', 
+              'covar_sigx2', 'covar_sigy2', 'covariance', 'covariance_eigvals', 'cutout_centroid', 
+              'cutout_centroid_quad', 'cutout_centroid_win', 'cutout_maxval_index', 
+              'cutout_minval_index', 'cxx', 'cxy', 'cyy', 'eccentricity', 'ellipticity', 
+              'elongation', 'equivalent_radius', 'fwhm', 'gini', 
+              'inertia_tensor', 'isscalar', 'kron_aperture', 'kron_flux', 'kron_fluxerr', 
+              'kron_radius', 'label', 'labels', 'local_background', 'local_background_aperture', 
+              'max_value', 'maxval_index', 'maxval_xindex', 'maxval_yindex', 'min_value', 
+              'minval_index', 'minval_xindex', 'minval_yindex', 'moments', 'moments_central', 
+              'nlabels', 'orientation', 'perimeter', 'segment_area', 'segment_flux', 
+              'segment_fluxerr', 'semimajor_sigma', 'semiminor_sigma', 'skybbox_ll', 'skybox_lr', 
+              'skybox_ul', 'skybox_ur', 'sky_centroid', 'sky_centroid_icrs', 'sky_centroid_quad', 
+              'sky_centroid_win', 'slices', 'xcentroid', 'xcentroid_quad', 'xcentroid_win', 
+              'ycentroid', 'ycentroid_quad', 'ycentroid_win']
+
+    def measure_background(self, sci, wht, config):
+
+        # The interpolation, background and RMS estimators.
+        interpolators = {'IDW':pb.BkgIDWInterpolator(), 'Zoom':pb.BkgZoomInterpolator()}
+        back_est = {'Mean':pb.MeanBackground(), 'Median':pb.MedianBackground(), 
+                    'Mode':pb.ModeEstimatorBackground(),'MMM':pb.MMMBackground(),
+                    'SExtractor':pb.SExtractorBackground(),
+                    'BiweightLocation':pb.BiweightLocationBackground()}
+        rms_est = {'Std':pb.StdBackgroundRMS(), 'MADStd':pb.MADStdBackgroundRMS(), 
+                   'BiweightScale':pb.BiweightScaleBackgroundRMS()}
+        
+        # Mask off detector regions.
+        coverage_mask = wht == 0
+
+        # Mask sources if provided.
+        if config['SOURCE_MASK'] != None:
+            mask = fits.getdata(config['SOURCE_MASK'])
+        else:
+            mask = None
+
+        # Get the sigma clipping object.
+        if config['SIGMA_CLIP'] == True:
+            sigma_clip = SigmaClip(
+                sigma_lower=config['SIGMA'][0], sigma_upper=config['SIGMA'][1], 
+                maxiters=config['MAX_ITERS'])
+        else:
+            sigma_clip = None
+
+        # Get the interpolation, background and RMS estimators.
+        bkg_estimator = back_est.get(config['BACK_ESTIMATOR'])
+        bkgrms_estimator = rms_est.get(config['RMS_ESTIMATOR'])
+        interpolator = interpolators.get(config['INTERPOLATOR'])
+
+        # Calculate the 2D background.
+        print('Measuring the 2D sky background...')
+        bkg = pb.Background2D(
+            sci, box_size=config['BOX_SIZE'], mask=mask, coverage_mask=coverage_mask, fill_value=0,
+            exclude_percentile=config['EXCLUDE_PERCENTILE'], filter_size=config['FILTER_SIZE'],
+            filter_threshold=config['FILTER_THRESH'], edge_method=config['EDGE_METHOD'], 
+            sigma_clip=sigma_clip, bkg_estimator=bkg_estimator, bkgrms_estimator=bkgrms_estimator,
+            interpolator=interpolator)
+        
+        # Subtract the background if requested.
+        if config['BKG_SUB'] == True:
+            print('Removed background.')
+            sci = sci - bkg.background
+        else:
+            print('Image is already background subtracted.')
+        
+        return sci, bkg
+    
+    def filter(self, sci, wht, bkg, config):
+
+        if config['FILTER'] != None:
+
+            # Replace off detector regions with median background so 
+            # convolution doesn't smear them.
+            sci = np.where(wht == 0, bkg.background_median, sci)
+
+            # Generate kernel based on provided FWHM and convolve.
+            if config['FILTER'] == 'Gaussian':
+                print('Applying Gaussian detection filter...')
+                sigma = config['FWHM'] * gaussian_fwhm_to_sigma
+                kernel = Gaussian2DKernel(sigma, x_size=config['SIZE'], y_size=config['SIZE'])
+                sci = convolve_fft(sci, kernel, boundary='fill', fill_value=bkg.background_median,
+                                   nan_treatment='interpolate', preserve_nan=True, allow_huge=True)
+            elif config['FILTER'] == 'Tophat':
+                print('Applying Tophat detection filter...')
+                sigma = config['FWHM'] / np.sqrt(2)
+                kernel = Tophat2DKernel(sigma, x_size=config['SIZE'], y_size=config['SIZE'])
+                sci = convolve_fft(sci, kernel, boundary='fill', fill_value=bkg.background_median,
+                                   nan_treatment='interpolate', preserve_nan=True, allow_huge=True)
+            else:
+                raise ValueError('Kernel not supported: {}'.format(config['FILTER']))
+            
+            # Revert to zeros in the off detector region.
+            sci = np.where(wht == 0, 0, sci)
+                
+        return sci
+    
+    def segmentation(self, sci, wht, bkg, config):
+
+        # Calculate the detection threshold.
+        # Use the computed or provided RMS map.
+        if config['RMS_MAP'] == None:
+            print('Using internal background RMS map for detection.')
+            rms = bkg.background_rms
+        else:
+            print('Using external background RMS map for detection.')
+            rms = fits.getdata(config['RMS_MAP'])
+
+        threshold = config['N_SIGMA'] * rms
+
+        ##TODO: Use the error image at this stage.
+        # Mask the image edges.
+        mask = wht == 0
+
+        # Generate the segmentation image
+        print('Detecting sources...')
+        seg_image = detect_sources(sci, threshold=threshold, npixels=config['N_PIXELS'],
+                                    connectivity=config['CONNECTIVITY'], mask = mask)
+        
+        # and then deblend it.
+        print('Deblending sources...')
+        seg_image = deblend_sources(sci, seg_image, config['N_PIXELS'], nlevels=config['N_LEVELS'],
+                                    contrast=config['CONTRAST'], mode=config['MODE'],
+                                    connectivity=config['CONNECTIVITY'], relabel=True,
+                                    nproc=1, progress_bar=False)
+        
+        return seg_image
+    
+    def extract(self, science, weight, error, parameters = {}, outputs = None, outdir = './'):
+
+        # Make a local copy of the config for updating with provided parameters.
+        config = copy.deepcopy(self.config)
+
+        # Update the config with given parameters.
+        for key in list(parameters.keys()):
+            config[key] = parameters[key]
+
+        # Store the config as is for saving as hdf5 attributes.
+        att_config = copy.deepcopy(config)
+
+        # Expand any environment variables and convert string to None.
+        for key, value in config.items():
+            if type(value) == str:
+                config[key] = os.path.expandvars(value)
+            if value == 'None':
+                config[key] = None
+
+        # Determine if single or double image mode is being used.
+        if type(science) != list:
+            print(f'Single image mode. \n D/M: {os.path.basename(science)}')
+            science = [science]
+            weight = [weight]
+            error = [error]
+            cat_name = f'{os.path.basename(science[0]).removesuffix(".fits")}_photutils.hdf5'
+        else:
+            print(f'Double image mode. \n D: {os.path.basename(science[0])} \n M: {os.path.basename(science[1])}')
+            cat_name = f'{os.path.basename(science[1]).removesuffix(".fits")}_photutils.hdf5'
+
+        # First load the detection images.
+        sci_d, hdr_d = fits.getdata(science[0], header=True)
+        wht_d = fits.getdata(weight[0])
+        err_d = fits.getdata(error[0])
+
+        # Measure background and filter.
+        sci_d, bkg_d = self.measure_background(sci_d, wht_d, config)
+        sci_d_filt = self.filter(sci_d, wht_d, bkg_d, config)
+
+        # Generate the segmentation map,
+        seg_map = self.segmentation(sci_d_filt, wht_d, bkg_d, config)
+
+        # and save if requested.
+        if config['SEGMAP'] != None:
+            fits.writeto(config['SEGMAP'], seg_map, header=hdr_d)
+
+        # If single image mode measurement is detection.
+        if len(science) == 1:
+            # So assign the same properies.
+            sci_m = sci_d
+            hdr_m = hdr_d
+            wht_m = wht_d
+            err_m = err_d
+            sci_m_filt = sci_d_filt
+            bkg_m = bkg_d
+
+        # If double, need to background subtract and filter.
+        elif len(science) == 2:
+
+            # Load the measurement images.
+            sci_m, hdr_m = fits.getdata(science[1], header=True)
+            wht_m = fits.getdata(weight[1])
+            err_m = fits.getdata(error[1])
+
+            # Measure background
+            sci_m, bkg_m = self.measure_background(sci_m, wht_m, config)
+
+            # and only filter if required.
+            sci_m_filt = None
+            if config['CONVOLVED'] == True:
+                sci_m_filt = self.filter(sci_m, wht_m, bkg_m, config)
+        else:
+            raise ValueError('Incorrect input path shapes.')
+
+        # Get the WCS information from the header.
+        wcs = WCS(hdr_m)
+
+        # Mask the off detector regions.
+        mask = wht_m == 0
+
+        # Should convolved data be used to measure properties?
+        if config['CONVOLVED'] == True:
+            convolved_data = sci_m_filt
+        else:
+            convolved_data = None
+
+        # Measure the photometry.
+        print('Measuring source properties...')
+        cat = SourceCatalog(
+            sci_m, seg_map, convolved_data=convolved_data, error=err_m, mask=mask,
+            background=bkg_m.background, wcs=wcs, localbkg_width=config['LOCALBKG_WIDTH'],
+            apermask_method=config['APERMASK_METHOD'], kron_params=config['KRON_PARAMS'],
+            detection_cat=None, progress_bar=False)
+        
+        # Measure circular aperture photometry if requested.
+        labels = []
+        for idx, radius in enumerate(config['RADII']):
+            cat.circular_photometry(radius, f'APER_{idx}', overwrite=False)
+            labels += [f'APER_{idx}_flux', f'APER_{idx}_fluxerr']
+        
+        # Get the full list of avilable outputs.
+        output_names = self.output_names + labels
+
+        # Now add everything to the hdf5 catalogue.
+        with h5py.File(f'{outdir}/{cat_name}', 'w') as f:
+
+            # Add contents to a "photometry" group.
+            f.create_group('photometry')
+
+            # If no outputs requested, use all.
+            if outputs == None:
+                outputs = output_names
+
+            # Add as a dataset, translating names to SE standard.
+            for column in output_names:
+                if column in outputs:
+                    f[f'photometry/{column}'] = getattr(cat, column)
+
+            # Add the config parameters as attributes.
+            for key,value in att_config.items():
+                f['photometry'].attrs[key] = value
+
+        return
+    
+class ProFound():
+    """
+    Wrapper around the profound.R ProFound class to allow running 
+    through Python.
+    """
+
+    def __init__(self, config_file, Rfile_path='./extraction/wrap_profound.R'):
+        """
+        __init__ method for ProFound.
+
+        Arguments
+        ---------
+        config_file (str)
+            Path to ".yml" configuration file.
+        Rfile_path (str)
+            Path to the file containing the R version of the ProFound 
+            class.
+        """
+
+        # Store the configuration file path
+        self.configfile = config_file
+
+        # and the content.
+        with open(self.configfile, 'r') as file:
+            yml = yaml.safe_load_all(file)
+            content = []
+            for entry in yml:
+                content.append(entry)
+            self.config = content[0]
+
+        # The path to the profound.R file.
+        self.Rfile_path = Rfile_path
+    
+    def extract(self, science, parameters={}, outputs=None, outdir='./'):
+        """
+        Perform source extraction using Profound. In reality this
+        method simply passes the parameters to wrap_profound.R and the 
+        extraction and processing is done there.
+
+        Arguments
+        ---------
+        image (str, List[str])
+            If str, the filename of the image to extract.
+            If a List[str] filename of detection and measurement images.
+        parameters (dict)
+            Key-value pairs overwritting parameters in the config file 
+            just for this run.
+        outputs (list)
+            List of output parameters to save.
+        outdir (str)
+            Directory in which to store outputs. 
+
+        Returns
+        -------
+        cat_name (str)
+            The location of the generated catalogue.
+        """
+
+        # Start with the base command.
+        basecmd = [self.Rfile_path, f'config_path={self.configfile}']
+
+        # Add the science images.
+        if type(science) == list:
+            basecmd.append(f'img1={science[0]}', f'img2={science[1]}')
+            cat_name = f'{outdir}/{os.path.basename(science[1]).replace(".fits","_profound.hdf5")}'
+        else:
+            basecmd.append(f'img1={science}')
+            cat_name = f'{outdir}/{os.path.basename(science).replace(".fits","_profound.hdf5")}'
+
+        # Get a comma seperated list of outputs.
+        if outputs == None:
+            basecmd.append('outputs=None')
+        else:
+            out_str = ''
+            for output in outputs:
+                out_str += f'{output},'
+            basecmd.append(out_str[:-1])
+        
+        # Add the overwritten parameters.
+        for key, value in parameters.items():
+            basecmd.append(f'{key}={value}')
+
+        # Finally the output directory.
+        basecmd.append(f'outdir={outdir}')
+
+        # Now run on the command line.     
+        p = subprocess.Popen(basecmd, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+        for line in p.stderr:
+            print(line.decode(encoding = "UTF-8"))
+        out, err = p.communicate()    
+
+        return cat_name

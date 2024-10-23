@@ -10,12 +10,12 @@ RING_WIDTH: 3    # Width of the filtering ring. [pix]
 
 # Source masking
 # --------------
-TIER_NSIGMA: [1.5, 1.5, 1.5, 1.5]    # Factor above background required for detection at each masking tier.
-SCALE_U: 1    # Upper limit on detection threshold scaling.
-SCALE_L: 0.7    # Lower limit on detection threshold scaling.
-TIER_NPIXELS: [12, 9, 3, 1]    # Minimum connected pixels required for detection at each masking tier.
-TIER_KERNEL_SIZE: [18, 12, 6, 3]    # Standard deviation of the smoothing kernel at each masking tier.
-TIER_DILATE_SIZE: [24, 18, 15, 12]    # Radius of source mask dilation at each masking tier. [pix]
+TIER_NSIGMA: [2, 2, 2, 2]    # Factor above background required for detection at each masking tier.
+SCALE_THRESH: 30    # Minimum median weight ratio required for scaling of detection threshold.
+SCALE_MAX: 2.5    # Multiplicative limit on the detection threshold scaling.
+TIER_NPIXELS: [11, 7, 4, 2]    # Minimum connected pixels required for detection at each masking tier.
+TIER_KERNEL_SIZE: [19, 11, 6, 3]    # Standard deviation of the smoothing kernel at each masking tier.
+TIER_DILATE_SIZE: [19, 15, 11, 7]    # Radius of source mask dilation at each masking tier. [pix]
 
 # Background Subtraction
 # ----------------------

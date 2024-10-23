@@ -1,44 +1,44 @@
 # Background
 #-----------
-background_sub: True    # Measure the background of the science image internally?
+background_sub: False    # Measure the background of the science image internally?
 background_mask: None    # Path to fits file storing source mask to use during background subtraction.
 background_maskthresh: 0.0    # Mask pixels greater than this value are considered masked.
-bw: 64    # Width of the background box. [pixels]
-bh: 64    # Height of the background box. [pixels]
+bw: 100    # Width of the background box. [pixels]
+bh: 100    # Height of the background box. [pixels]
 fw: 3    # Background filter width. [boxes]
 fh: 3    # Background filter height. [boxes]
-fthresh: 0.0    # Filter threshold.
+fthresh: -10000    # Filter threshold.
 
 # Extraction
 #-----------
 thresh: 1.5    # Level above background required for detection.
-minarea: 7    # Minimum connect pixels required for detection.
+minarea: 6    # Minimum connect pixels required for detection.
 
 gain: None    # Conversion factor between data array units and poisson counts. 
 
-filter_kernel: None   # Path to SExtractor filter kernel to use for detection filtering.
+filter_kernel: gauss_2.0_5x5.conv   # Path to filter kernel to use for detection filtering.
 filter_type: matched    # Filter treatment. (matched, conv)
 
 detection_mask: None    # Path to fits file storing mask to use during detection. 'error' will use NaNs in error image.
 detection_maskthresh: 0.0    # Mask pixels greater than this value are considered masked.
 
-deblend_cont: 0.06    # Minimum contrast ratio used for object deblending. To entirely disable deblending, set to 1.0.
+deblend_cont: 0.01    # Minimum contrast ratio used for object deblending. To entirely disable deblending, set to 1.0.
 deblend_nthresh: 32    # The number of thresholds used for deblending.
 
-clean: True    # Clean detections close to bright sources?
-clean_param: 5.0    # Cleaning efficiency.
+clean: False    # Clean detections close to bright sources?
+clean_param: 1.0    # Cleaning efficiency.
 
-segmentation_map: test_segmap.fits    # Filename to use for the segmentation map, or 'None' to discard.
+segmentation_map: None    # Filename to use for the segmentation map, or 'None' to discard.
 
-pixstack: 10000000    # The size in pixels of the internal pixel buffer.
+pixstack: 2000000    # The size in pixels of the internal pixel buffer.
 object_limit: 10000   # The limit on the number of sub-objects when deblending. 
 
 # Photometry
 #-----------
-flux_conversion: 10    # Conversion from image values to desired flux unit. Use nJy for full FLAGS functionality.
+flux_conversion: 21.15    # Conversion from image values to desired flux unit. Use nJy for full FLAGS functionality.
 
 kron_factor: 2.5    # Kron factor for eastimating major and minoraxes.
-min_radius: 0.0    # Minimum radius required for kron photometry. Use circular otherwise.
+min_radius: 1.5    # Minimum radius required for kron photometry. Use circular otherwise.
 int_radius: 6    # Kron integration radius.
 
 mask_type: BLANK    # Type of masking to use when calculating photometry. (NONE, BLANK, SEGMENT)

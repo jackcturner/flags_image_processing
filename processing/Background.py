@@ -14,8 +14,8 @@ from astropy.convolution import convolve_fft, Ring2DKernel, Gaussian2DKernel
 
 from scipy.ndimage import median_filter
 
-from photutils import Background2D, BiweightLocationBackground, BkgIDWInterpolator
-from photutils import BkgZoomInterpolator
+from photutils.background import Background2D, BiweightLocationBackground, BkgIDWInterpolator
+from photutils.background import BkgZoomInterpolator
 from photutils.segmentation import detect_sources
 from photutils.utils import circular_footprint
 
@@ -581,6 +581,7 @@ class Background():
 
             # Combined the merged and border mask.
             merged_mask = fits.getdata(merged_name)
+            merged_mask = merged_mask.astype(bool)
             sourcemask = merged_mask | bordermask
             mask = sourcemask != 0
 
@@ -612,8 +613,8 @@ class Background():
                 fits.writeto(bkgimage, bkgsub.astype(np.float32), header = hdr, overwrite = True)
             # Otherwise create a new file.
             else:
-                fits.writeto(image.replace(".fits", f"_{suffix}.fits"), bkgsub.astype(np.float32), header = hdr, 
-                             overwrite = True) 
+                fits.writeto(image.replace(".fits", f"_{suffix}.fits"), bkgsub.astype(np.float32),
+                             header = hdr, overwrite = True) 
 
         # Delete merged mask if required.
         if '.temp' in merged_name:
