@@ -1,4 +1,5 @@
 import os
+import re
 import h5py
 import numpy as np
 from numpy.random import uniform
@@ -969,5 +970,68 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
                         else:
                             f[f'photometry/{filter}/{err_name}{suffix}'] = err_corr
                 
+
+    return
+
+def clean_regions(region_file, overwrite=False, outname=None):
+    """
+    Remove regions with zero width from a region file.
+
+    Arguments
+    ---------
+    region_file (str)
+        Path to region file to clean.
+    overwrite (bool)
+        If True, overwrite the original file. 
+    outname (str/None)
+        If overwrite == False, save a new region file with this name.
+    """
+
+
+    # Remove any non-numeric characters.
+    def clean_value(value):
+        return float(re.sub(r'[^\d.]+', '', value))
+    
+    with open(region_file, 'r') as f:
+        lines = f.readlines()
+
+    filtered_lines = []
+    for line in lines:
+        # Always keep lines that don't start with region types
+        if not any(line.startswith(region) for region in ['ellipse', 'box', 'circle']):
+            filtered_lines.append(line)
+            continue
+
+        # Parse region types and dimensions for specific region shapes
+        if 'box' in line:
+            parts = line.split('(')[1].split(')')[0].split(',')
+            width = clean_value(parts[2])
+            height = clean_value(parts[3])
+            if width > 0 and height > 0:
+                filtered_lines.append(line)
+        elif 'circle' in line:
+            parts = line.split('(')[1].split(')')[0].split(',')
+            radius = clean_value(parts[2])
+            if radius > 0:
+                filtered_lines.append(line)
+        elif 'ellipse' in line:
+            parts = line.split('(')[1].split(')')[0].split(',')
+            width = clean_value(parts[2])
+            height = clean_value(parts[3])
+            if width > 0 and height > 0:
+                filtered_lines.append(line)
+
+    # Overwrite the old region file.
+    if overwrite == True:
+        os.remove(region_file)
+
+        with open(region_file, 'w') as f:
+            f.writelines(filtered_lines)
+    # Or save to a new file.
+    else:
+        if outname == None:
+            outname = region_file.replace('.reg', 'corrected.reg')
+        with open(outname, 'w') as f:
+            f.writelines(filtered_lines)
 
     return
