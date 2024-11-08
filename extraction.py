@@ -8,12 +8,13 @@ import yaml
 
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import median_abs_deviation
+from scipy.stats import median_abs_deviation, mode
 
 from astropy.table import Table
 from astropy.io import ascii, fits
 from astropy.stats import sigma_clipped_stats, SigmaClip, gaussian_fwhm_to_sigma
 from astropy.convolution import Gaussian2DKernel, Tophat2DKernel, convolve_fft
+from astropy.nddata import reshape_as_blocks
 from astropy.wcs import WCS
 from astropy.wcs.utils import pixel_to_skycoord
 
@@ -404,7 +405,7 @@ class SExtractor():
         # Measure the PSF curve of growth and interpolate.
         psf = fits.getdata(psf_filename)
         radii = np.arange(0.1, psf.shape[0], 1)
-        radii, cog, p = measure_curve_of_growth(psf, radii = radii, position = None, norm = False,
+        radii, cog, p = measure_curve_of_growth(psf_filename, radii = radii, position = None, norm = False,
                                                 show = False)
         f = lambda r: np.interp(r, radii, cog)
 
@@ -1239,7 +1240,7 @@ class photuitls():
                    'BiweightScale':pb.BiweightScaleBackgroundRMS()}
         
         # Mask off detector regions.
-        coverage_mask = wht == 0
+        coverage_mask = ~((wht != 0) & (np.isnan(wht) == False))
 
         # Mask sources if provided.
         if config['SOURCE_MASK'] != None:
@@ -1284,7 +1285,8 @@ class photuitls():
 
             # Replace off detector regions with median background so 
             # convolution doesn't smear them.
-            sci = np.where(wht == 0, bkg.background_median, sci)
+            mask = ~((wht != 0) & (np.isnan(wht) == False))
+            sci = np.where(mask == True, bkg.background_median, sci)
 
             # Generate kernel based on provided FWHM and convolve.
             if config['FILTER'] == 'Gaussian':
@@ -1309,18 +1311,49 @@ class photuitls():
     
     def segmentation(self, sci, wht, bkg, config):
 
-        # Calculate the detection threshold.
-        # Use the computed or provided RMS map.
-        if config['RMS_MAP'] == None:
-            print('Using internal background RMS map for detection.')
-            rms = bkg.background_rms
-        else:
-            print('Using external background RMS map for detection.')
+        # If an RMS map is provided, it can be used directly to 
+        # calculate the detection threshold.
+        if config['WEIGHT_TYPE'] == 'MAP_RMS':
             rms = fits.getdata(config['RMS_MAP'])
+        # Else the weight or variance map is assumed relative and needs
+        # to be scaled to total.
+        else:
+            if config['WEIGHT_TYPE'] == 'MAP_VAR':
+                var = fits.getdata(wht)
+            elif config['WEIGHT_TYPE'] == 'MAP_WEIGHT':
+                var = fits.getdata(wht)
+                var = 1/var
+            else:
+                raise KeyError(f'{config["WEIGHT_TYPE"]} is not a valid weight map.')
 
+            # If an integer number of boxes do not fit in the image, the
+            # last boxes will be ignored.
+            nboxes_y = wht.shape[0] // config['BOX_SIZE'][0]
+            nboxes_x = wht.shape[1] // config['BOX_SIZE'][1]
+
+            y1 = nboxes_y * config['BOX_SIZE'][0]
+            x1 = nboxes_x * config['BOX_SIZE'][1]
+
+            # Get the variance and background RMS images as boxes.
+            core = reshape_as_blocks(var[:y1, :x1].copy(), config['BOX_SIZE'])
+            internal_rms = reshape_as_blocks(bkg.background_rms[:y1, :x1].copy(), config['BOX_SIZE'])
+
+            # Compute the modal variance within each box.
+            mode_, _ = mode(core, axis=(2, 3), keepdims=False)
+            # And the deviation of the RMS.
+            std = np.std(internal_rms, axis=(2,3), keepdims=False)
+
+            # Compute the scaling factor.
+            s = (mode_ > 0) & (std > 0)
+            ratio = std[s]/mode_[s]
+            factor = np.median(ratio)
+
+            # Get the final RMS map used for thresholding.
+            rms = np.sqrt(var * factor)
+
+        # Compute the detection threshold.
         threshold = config['N_SIGMA'] * rms
 
-        ##TODO: Use the error image at this stage.
         # Mask the image edges.
         mask = wht == 0
 
