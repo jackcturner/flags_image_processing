@@ -55,7 +55,7 @@ def measure_completeness(
           sci_name, wht_name, bins, config_name, psf_name=None, filter=None, seg_name=None,
           dilate=0, border_width=50, sex_path='sex', min_sources=1500, density=5,
           max_distance=6.66, max_flux=1.5, min_flux=0.5, min_sn=2, conversion=1/21.15, 
-          pixel_scale=0.03):
+          pixel_scale=0.03, outdir='./'):
     """
     Measure the completeness of an image by inserting synthetic sources
     in a range of magnitude bins.
@@ -118,16 +118,16 @@ def measure_completeness(
     se_run = SExtractor(config_name, sex_path)
 
     # Create an edge mask to remove noisy regions.
-    edges = create_edge_mask(sci_name, n_pixels=border_width)
-    os.remove('combined_edge_mask.fits')
+    edges = create_edge_mask(sci_name, n_pixels=border_width, outname=f'{outdir}/combined_edge_mask.fits')
+    os.remove(f'{outdir}/combined_edge_mask.fits')
 
     # If no mask provided, generate a segmentation map.
     delete = False
     if seg_name == None:
         print('Generating source mask...')
+        seg_name = f'{outdir}/completeness_mask.fits'
         cat = se_run.SExtract(sci_name, wht_name, parameters = {'CHECKIMAGE_TYPE':'SEGMENTATION',
-                                                            'CHECKIMAGE_NAME':'./completeness_mask.fits'})
-        seg_name = './completeness_mask.fits'
+                                                            'CHECKIMAGE_NAME':seg_name})
         os.remove(cat)
         delete = True
 
@@ -235,10 +235,10 @@ def measure_completeness(
                 source_table.add_row([i, location[1], location[0], flux_psf])
                         
             # Save the image.
-            fits.writeto(f'completeness_{n_img}_{len(locations)}.fits', img, hdr, overwrite = True)
+            fits.writeto(f'{outdir}/completeness_{n_img}_{len(locations)}.fits', img, hdr, overwrite = True)
 
             # Run the SExtraction on this image.
-            cat = se_run.SExtract(f'completeness_{n_img}_{len(locations)}.fits', wht_name, parameters = {'TO_FLUX':1/conversion, 'CHECKIMAGE_TYPE': 'NONE'}, output = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'])
+            cat = se_run.SExtract(f'{outdir}/completeness_{n_img}_{len(locations)}.fits', wht_name, parameters = {'TO_FLUX':1/conversion, 'CHECKIMAGE_TYPE': 'NONE', 'WEIGHT_TYPE':'MAP_WEIGHT'}, output = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'], outdir=outdir)
 
             with h5py.File(cat) as f:
 
@@ -295,7 +295,7 @@ def measure_completeness(
 
             # Remove files for this image.
             os.remove(cat)
-            os.remove(f'completeness_{n_img}_{len(locations)}.fits')
+            os.remove(f'{outdir}/completeness_{n_img}_{len(locations)}.fits')
 
             n_img += 1
 
