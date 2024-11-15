@@ -872,7 +872,7 @@ class SEP():
 
         return bkg
                 
-    def detect_sources(self, sci, hdr, config, weight=None, bkg=None, outdir = './'):
+    def detect_sources(self, sci, hdr, config, error=None, bkg=None, outdir = './'):
         """
         Use SEP to identify sources in a 2D image.
         
@@ -884,7 +884,7 @@ class SEP():
             The WCS header of the science image.
         config (dict)
             Dictionary of source detection configuration arguments.
-        weight (None, str)
+        error (None, str)
             The path to the map for detection weighting.
         bkg (None, sep.Background)
             The background map of sci if already computed.
@@ -901,10 +901,8 @@ class SEP():
         print('Detecting sources...')
 
         # Open the error image if provided.
-        if weight != None:
-            wht = fits.getdata(weight)
-            wht = wht.byteswap(inplace=True).newbyteorder()
-            err = np.where(wht == 0, np.nan, 1/np.sqrt(wht))
+        if error != None:
+            err = fits.getdata(error)
 
         # Else use the global background rms.
         else:
@@ -920,8 +918,8 @@ class SEP():
         if config['detection_mask'] != None:
             # Use the error map.
             if config['detection_mask'] == 'error':
-                if weight != None:
-                    mask = np.isnan(err)
+                if error != None:
+                    mask = ~((err != 0) & (np.isnan(err) == False))
                 else:
                     raise KeyError("No error map provided but detection_mask == 'error'.")
             # Or a provided file.
@@ -971,7 +969,7 @@ class SEP():
 
         return cat, segmap
     
-    def measure_photometry(self, sci, config, segmap, cat, weight=None, bkg=None):
+    def measure_photometry(self, sci, config, segmap, cat, error=None, bkg=None):
         """
         Measure the photometry of detected sources using Kron apertures.
         
@@ -985,7 +983,7 @@ class SEP():
             2D image indicating the locations of detected sources.
         cat (astropy.table.table.Table)
             Table storing information on detected sources.
-        weight (None, str)
+        error (None, str)
             The path to the map for detection weighting.
         bkg (None, sep.Background)
             The background map of sci if already computed.
@@ -1002,10 +1000,9 @@ class SEP():
         print('Measuring kron photometry...')
 
         # Open the error image if provided.
-        if weight != None:
-            wht = fits.getdata(weight)
-            wht = wht.byteswap(inplace=True).newbyteorder()
-            err = np.where(wht == 0, np.nan, 1/np.sqrt(wht))
+        if error != None:
+            err = fits.getdata(error)
+            err = err.byteswap(inplace=True).newbyteorder()
 
         # Else use the global background rms.
         else:
@@ -1021,8 +1018,8 @@ class SEP():
         if config['detection_mask'] != None:
             # Use the error map.
             if config['detection_mask'] == 'error':
-                if weight != None:
-                    mask = np.isnan(err)
+                if error != None:
+                    mask = ~((err != 0) & (np.isnan(err) == False))
                 else:
                     raise KeyError("No error map provided but detection_mask == 'error'.")
             # Or a provided file.
@@ -1066,7 +1063,7 @@ class SEP():
         return flux, fluxerr, flag
 
     
-    def extract(self, science, weight=None, parameters = {}, outputs=None, outdir='./'):
+    def extract(self, science, error=None, parameters = {}, outputs=None, outdir='./'):
         """
         Main function for extracting sources and measuring photometry 
         in a science image.
@@ -1077,9 +1074,9 @@ class SEP():
             If string, path to single image from which to detect and 
             measure sources. If List[str], path to detection image as the 
             first entry and measurement as the second.
-        weight (None, str, List[str])
+        error (None, str, List[str])
             The corresponding weight images for detection.
-            If None, use global background RMS for weighting.
+            If None, use global background RMS.
         parameters (dict)
             Key-value pairs overwritting parameters in the config file 
             just for this run.
@@ -1133,29 +1130,29 @@ class SEP():
         # Now work out the type of extraction.
 
         # Two image with weights.
-        if (len(sci_imgs) == 2) and (type(weight) == list):
+        if (len(sci_imgs) == 2) and (type(error) == list):
             print('Starting in dual image mode with weighting.')
             cat_name = f'{outdir}/{os.path.basename(science[1]).removesuffix(".fits")}.hdf5'
-            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, weight[0], outdir = outdir)
-            flux, fluxerr, flag = self.measure_photometry(sci_imgs[1], config, segmap, cat, weight[1])
+            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, error[0], outdir = outdir)
+            flux, fluxerr, flag = self.measure_photometry(sci_imgs[1], config, segmap, cat, error[1])
         # Two image without weight.
-        elif (len(sci_imgs) == 2) and (type(weight) == type(None)):
+        elif (len(sci_imgs) == 2) and (type(error) == type(None)):
             print('Starting in dual image mode.')
             cat_name = f'{outdir}/{os.path.basename(science[1]).removesuffix(".fits")}.hdf5'
             cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, bkg = bkgs[0], outdir = outdir)
             flux, fluxerr, flag = self.measure_photometry(sci_imgs[1], config, segmap, cat, bkg = bkgs[1])
         # Single image without weight.
-        elif (len(sci_imgs) == 1) and (type(weight) == type(None)):
+        elif (len(sci_imgs) == 1) and (type(error) == type(None)):
             print('Starting in single image mode.')
             cat_name = f'{outdir}/{os.path.basename(science).removesuffix(".fits")}.hdf5'
             cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, bkg = bkgs[0], outdir = outdir)
             flux, fluxerr, flag = self.measure_photometry(sci_imgs[0], config, segmap, cat, bkg = bkgs[0])
         # Single image with weight.
-        elif (len(sci_imgs) == 1) and (type(weight) == str):
+        elif (len(sci_imgs) == 1) and (type(error) == str):
             print('Starting in single image mode with weighting.')
             cat_name = f'{outdir}/{os.path.basename(science).removesuffix(".fits")}.hdf5'
-            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, weight, outdir = outdir)
-            flux, fluxerr, flag = self.measure_photometry(sci_imgs[0], config, segmap, cat, weight)
+            cat, segmap = self.detect_sources(sci_imgs[0], hdrs[0], config, error, outdir = outdir)
+            flux, fluxerr, flag = self.measure_photometry(sci_imgs[0], config, segmap, cat, error)
 
         # # Add these measurements to the catalogue.
         cat['FLUX_AUTO'] = flux
@@ -1228,7 +1225,7 @@ class photuitls():
               'sky_centroid_win', 'slices', 'xcentroid', 'xcentroid_quad', 'xcentroid_win', 
               'ycentroid', 'ycentroid_quad', 'ycentroid_win']
 
-    def measure_background(self, sci, wht, config):
+    def measure_background(self, sci, err, config):
 
         # The interpolation, background and RMS estimators.
         interpolators = {'IDW':pb.BkgIDWInterpolator(), 'Zoom':pb.BkgZoomInterpolator()}
@@ -1240,7 +1237,7 @@ class photuitls():
                    'BiweightScale':pb.BiweightScaleBackgroundRMS()}
         
         # Mask off detector regions.
-        coverage_mask = ~((wht != 0) & (np.isnan(wht) == False))
+        coverage_mask = ~((err != 0) & (np.isnan(err) == False))
 
         # Mask sources if provided.
         if config['SOURCE_MASK'] != None:
@@ -1279,13 +1276,13 @@ class photuitls():
         
         return sci, bkg
     
-    def filter(self, sci, wht, bkg, config):
+    def filter(self, sci, err, bkg, config):
 
         if config['FILTER'] != None:
 
             # Replace off detector regions with median background so 
             # convolution doesn't smear them.
-            mask = ~((wht != 0) & (np.isnan(wht) == False))
+            mask = ~((err != 0) & (np.isnan(err) == False))
             sci = np.where(mask == True, bkg.background_median, sci)
 
             # Generate kernel based on provided FWHM and convolve.
@@ -1305,24 +1302,23 @@ class photuitls():
                 raise ValueError('Kernel not supported: {}'.format(config['FILTER']))
             
             # Revert to zeros in the off detector region.
-            sci = np.where(wht == 0, 0, sci)
+            sci = np.where(mask == True, 0, sci)
                 
         return sci
     
-    def segmentation(self, sci, wht, bkg, config):
+    def segmentation(self, sci, err, bkg, config):
 
         # If an RMS map is provided, it can be used directly to 
         # calculate the detection threshold.
         if config['WEIGHT_TYPE'] == 'MAP_RMS':
-            rms = fits.getdata(config['RMS_MAP'])
+            rms = err
         # Else the weight or variance map is assumed relative and needs
         # to be scaled to total.
         else:
             if config['WEIGHT_TYPE'] == 'MAP_VAR':
-                var = fits.getdata(wht)
+                var = err
             elif config['WEIGHT_TYPE'] == 'MAP_WEIGHT':
-                var = fits.getdata(wht)
-                var = 1/var
+                var = 1/err
             else:
                 raise KeyError(f'{config["WEIGHT_TYPE"]} is not a valid weight map.')
 
@@ -1355,7 +1351,7 @@ class photuitls():
         threshold = config['N_SIGMA'] * rms
 
         # Mask the image edges.
-        mask = wht == 0
+        mask = ~((err != 0) & (np.isnan(err) == False))
 
         # Generate the segmentation image
         print('Detecting sources...')
@@ -1371,7 +1367,7 @@ class photuitls():
         
         return seg_image
     
-    def extract(self, science, weight, error, parameters = {}, outputs = None, outdir = './'):
+    def extract(self, science, error, parameters = {}, outputs = None, outdir = './'):
 
         # Make a local copy of the config for updating with provided parameters.
         config = copy.deepcopy(self.config)
@@ -1394,7 +1390,6 @@ class photuitls():
         if type(science) != list:
             print(f'Single image mode. \n D/M: {os.path.basename(science)}')
             science = [science]
-            weight = [weight]
             error = [error]
             cat_name = f'{os.path.basename(science[0]).removesuffix(".fits")}_photutils.hdf5'
         else:
@@ -1403,15 +1398,14 @@ class photuitls():
 
         # First load the detection images.
         sci_d, hdr_d = fits.getdata(science[0], header=True)
-        wht_d = fits.getdata(weight[0])
         err_d = fits.getdata(error[0])
 
         # Measure background and filter.
-        sci_d, bkg_d = self.measure_background(sci_d, wht_d, config)
-        sci_d_filt = self.filter(sci_d, wht_d, bkg_d, config)
+        sci_d, bkg_d = self.measure_background(sci_d, err_d, config)
+        sci_d_filt = self.filter(sci_d, err_d, bkg_d, config)
 
         # Generate the segmentation map,
-        seg_map = self.segmentation(sci_d_filt, wht_d, bkg_d, config)
+        seg_map = self.segmentation(sci_d_filt, err_d, bkg_d, config)
 
         # and save if requested.
         if config['SEGMAP'] != None:
@@ -1422,7 +1416,6 @@ class photuitls():
             # So assign the same properies.
             sci_m = sci_d
             hdr_m = hdr_d
-            wht_m = wht_d
             err_m = err_d
             sci_m_filt = sci_d_filt
             bkg_m = bkg_d
@@ -1432,16 +1425,15 @@ class photuitls():
 
             # Load the measurement images.
             sci_m, hdr_m = fits.getdata(science[1], header=True)
-            wht_m = fits.getdata(weight[1])
             err_m = fits.getdata(error[1])
 
             # Measure background
-            sci_m, bkg_m = self.measure_background(sci_m, wht_m, config)
+            sci_m, bkg_m = self.measure_background(sci_m, err_m, config)
 
             # and only filter if required.
             sci_m_filt = None
             if config['CONVOLVED'] == True:
-                sci_m_filt = self.filter(sci_m, wht_m, bkg_m, config)
+                sci_m_filt = self.filter(sci_m, err_m, bkg_m, config)
         else:
             raise ValueError('Incorrect input path shapes.')
 
@@ -1449,7 +1441,7 @@ class photuitls():
         wcs = WCS(hdr_m)
 
         # Mask the off detector regions.
-        mask = wht_m == 0
+        mask = ~((err_m != 0) & (np.isnan(err_m) == False))
 
         # Should convolved data be used to measure properties?
         if config['CONVOLVED'] == True:
