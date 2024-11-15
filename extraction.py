@@ -1187,7 +1187,7 @@ class SEP():
             
         print(f'All done and saved to {cat_name}')
 
-        return
+        return cat_name
 
 class photuitls():
 
@@ -1328,8 +1328,8 @@ class photuitls():
 
             # If an integer number of boxes do not fit in the image, the
             # last boxes will be ignored.
-            nboxes_y = wht.shape[0] // config['BOX_SIZE'][0]
-            nboxes_x = wht.shape[1] // config['BOX_SIZE'][1]
+            nboxes_y = var.shape[0] // config['BOX_SIZE'][0]
+            nboxes_x = var.shape[1] // config['BOX_SIZE'][1]
 
             y1 = nboxes_y * config['BOX_SIZE'][0]
             x1 = nboxes_x * config['BOX_SIZE'][1]
@@ -1493,7 +1493,7 @@ class photuitls():
             for key,value in att_config.items():
                 f['photometry'].attrs[key] = value
 
-        return
+        return f'{outdir}/{cat_name}'
     
 class ProFound():
     """
