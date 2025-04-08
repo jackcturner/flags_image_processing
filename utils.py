@@ -501,8 +501,6 @@ def measure_curve_of_growth(image, radii, position=None, norm=True, show=False):
         The value of the profile at each radius.
     """
 
-    image = fits.getdata(image)
-
     # Calculate the centroid of the source.
     if type(position) == type(None):
         position = centroid_com(image)
@@ -730,8 +728,7 @@ def regions_to_mask(image, regions, outname = None):
 
     return
 
-def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels=50,
-                     outname='combined_edge_mask.fits'):
+def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels=50, outname=None):
     """
     Use binaray hole filling and sobel filters to identify and mask
     image edges and merge multiple mask into a single combined mask.
@@ -813,8 +810,9 @@ def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels
         combined_mask = masks[0]
     combined_mask = combined_mask.astype(np.uint8)
 
-    hdr = fits.getheader(images[0])
-    fits.writeto(outname, combined_mask.astype(np.float32), hdr, overwrite = True)
+    if outname != None:
+        hdr = fits.getheader(images[0])
+        fits.writeto(outname, combined_mask.astype(np.float32), hdr, overwrite = True)
 
     return combined_mask
 
@@ -854,9 +852,12 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
 
             flag = []
 
-            # If the centre of an object is within the edge region, flag it.
+            # If the centre of an object is within the edge region, 
+            # flag it.
             for x, y in zip(xcen, ycen):
-                if mask[int(y), int(x)] == True:
+                if np.isfinite(x) == False or np.isfinite(y) == False:
+                    flag.append(1)
+                elif mask[int(y), int(x)] == True:
                     flag.append(1)
                 else:
                     flag.append(0)
@@ -868,7 +869,7 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
 
     return
 
-def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
+def correct_extinction(catalogue, replace = False, suffix = '_EXT', ra_key='ALPHA_SKY', dec_key='DELTA_SKY'):
     """
     Query the NED extinction calculator using mean RA and DEC location
     and apply correction to FLAGS catalogue.
@@ -920,8 +921,8 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
         for filter in filters:
 
             # Get the mean RA and DEC.
-            ra = str(np.mean(f[f'photometry/{filter}/ALPHA_SKY'][:]))
-            dec = str(np.mean(f[f'photometry/{filter}/DELTA_SKY'][:]))
+            ra = str(np.mean(f[f'photometry/{filter}/{ra_key}'][:]))
+            dec = str(np.mean(f[f'photometry/{filter}/{dec_key}'][:]))
 
             # Determine the closest matching filter.
             corr_filt = translate[filter]
@@ -1088,6 +1089,13 @@ def scale_weights(science, config, variance=None, weight=None):
             content.append(entry)
         config = content[0]
 
+    # Expand any environment variables and convert string to None.
+    for key, value in config.items():
+        if type(value) == str:
+            config[key] = os.path.expandvars(value)
+        if value == 'None':
+            config[key] = None
+
     # The interpolation, background and RMS estimators.
     interpolators = {'IDW':pb.BkgIDWInterpolator(), 'Zoom':pb.BkgZoomInterpolator()}
     back_est = {'Mean':pb.MeanBackground(), 'Median':pb.MedianBackground(), 
@@ -1098,11 +1106,12 @@ def scale_weights(science, config, variance=None, weight=None):
                 'BiweightScale':pb.BiweightScaleBackgroundRMS()}
     
     # Mask off detector regions.
-    coverage_mask = ~((var != 0) & (np.isnan(var) == False))
+    coverage_mask = (var == 0) + (np.isnan(var) == True) + (~np.isfinite(var))
 
     # Mask sources if provided.
     if config['SOURCE_MASK'] != None:
         mask = fits.getdata(config['SOURCE_MASK'])
+        mask = mask > 0
     else:
         mask = None
 

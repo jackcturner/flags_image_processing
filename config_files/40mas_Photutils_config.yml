@@ -5,7 +5,7 @@ BKG_SUB: False    # Should the measured background be subtracted from the scienc
 
 SOURCE_MASK: None    # Path to source mask to use when calculating the background.    
 
-BOX_SIZE: [75,75]    # The size of the background box along each axis. [pixels]
+BOX_SIZE: [75,75]    # The size of the background box along each y and x axes. [pixels]
 FILTER_SIZE: [3,3]    # The size along each axis of the 2D median filter. [pixels]
 FILTER_THRESH: None    # The threshold value for median filtering. Use None to filter all boxes.
 EDGE_METHOD: pad    # How to edit the image when it is not covered by an interger number of boxes. (pad, crop)
@@ -29,7 +29,6 @@ SIZE: 3    # The size of the detection filter in the x and y directions.
 # Detection
 #----------
 
-RMS_MAP: None    # Path to precalculated RMS map to use for calculating detection threshold.
 N_PIXELS: 5    # The minimum number of connected pixels required for detection.
 N_SIGMA: 1.5    # The threshold above the background RMS at each pixel required for detection.
 CONNECTIVITY: 8    # The number of surrounding pixels considered connected to each pixel. (4, 8)
@@ -45,7 +44,29 @@ SEGMAP: None    # File name to use when saving the segmenetation map. Use None t
 
 KRON_PARAMS: [2.5, 1.1, 0]    # Scaling parameter of the unscaled Kron radius, minimum value for the unscaled Kron radius, minimum circular radius. [-, pixels, pixels]
 RADII: []    # Measure photometry in circular apertures with these radii. [pixels]
-                      # Request output using APER_{idx}_flux and APER_{idx}_fluxerr.
+             # Request output using APER_{idx}_flux and APER_{idx}_fluxerr.
 APERMASK_METHOD: mask    # Approach to nearby source masking. (correct, mask, none)
 LOCALBKG_WIDTH: 0    # The width of the rectangular annulus used to compute a local background around each source. [pixels]
 CONVOLVED: False    # Should the detection filtered image be used to measure source properties?
+CONVERSION: 10    # Conversion from image values to desired flux unit.
+
+# Empirical Errors
+# ----------------
+EMPIRICAL: True    # Whether to perform the empirical estimation.
+
+MIN_RADIUS: 1    # Minimum noise aperture radius in pixels.
+MAX_RADIUS: 40    # Maximum noise aperture radius in pixels.
+N_RADII: 20    # The number of aperture radii to use.
+RADII_SPACING: linear  # The spacing to use when selecting radii between min and max. (linear, log)
+
+N_SMALL: 3000    # The number of apertures with radii below the median to place.
+N_LARGE: 500    # The number of apertures with radii above the median to place.
+MAX_ITERS: 50000    # Maximum attempts at finding a non overlapping aperture before exitting.
+
+WALKERS: 256    # Number of walkers to use in the MCMC.
+BURN_IN: 500   # Number of burn in iterations.
+N_ITERS: 10000    # Number of MCMC iterations.
+P_ERR: 0.05    # Percentage error on each point to use when fitting.
+INITIAL: [1,1]    # Inital parameter guesses. 
+
+SAVE_FIG: True    # Whether to save a plot of noise vs aperture size.

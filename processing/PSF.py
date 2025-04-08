@@ -1,5 +1,4 @@
-# Adapted from the aperpy code available at 
-# https://github.com/astrowhit/aperpy
+# Adapted from the aperpy code available at https://github.com/astrowhit/aperpy
 
 import copy
 import yaml
@@ -63,7 +62,7 @@ class PSF():
         self.PSFs = {}
         self.Kernels = {}
     
-    def measure_curve_of_growth(self, image, radii, position=None, norm=True, show=False):
+    def _measure_curve_of_growth(self, image, radii, position=None, norm=True, show=False):
         """
         Measure the Curve Of Growth of an image based on provided radii.
         
@@ -130,7 +129,7 @@ class PSF():
         # Return the aperture radii, COG and profile.
         return radii, cog, profile
     
-    def imshow(self, args, crosshairs=False, **kwargs):
+    def _imshow(self, args, crosshairs=False, **kwargs):
         """Display a series of PSF images as a single plot.
 
         Arguments
@@ -208,7 +207,7 @@ class PSF():
 
         return fig, ax
     
-    def find_stars(self, sci, err, config=None, save_figs=True, science_filename='science_image',
+    def _find_stars(self, sci, err, config=None, save_figs=True, science_filename='science_image',
                    outdir = './'):
         """
         Identify stars in an image using peak finding and criteria on the
@@ -282,7 +281,7 @@ class PSF():
             peaks['minv'][index] = np.nanmin(co)
 
             # Measure the the COG and profile and add to catalogue.
-            radii, cog, profile = self.measure_curve_of_growth(
+            radii, cog, profile = self._measure_curve_of_growth(
                 co, radii = np.array(config["RADII"]), position = position, norm = False)
             
             for ir in np.arange(len(config["RADII"])): 
@@ -470,7 +469,7 @@ class PSF():
             title = ['{}: {:.1f} AB, ({:.1f}, {:.1f})'.format(ii, mm, xx, yy) for ii, mm, xx, yy in 
                      zip(peaks['id'][accept], mags[accept], peaks['x0'][accept], peaks['y0'][accept]
                          )]
-            self.imshow(cutouts[accept], nsig = 30, title = title)
+            self._imshow(cutouts[accept], nsig = 30, title = title)
             plt.tight_layout()
             outname = os.path.basename(science_filename.replace(".fits", "_star_stamps.pdf"))
             plt.savefig(f'{outdir}/{outname}')
@@ -478,7 +477,7 @@ class PSF():
 
         return peaks[accept], cutouts[accept]
     
-    def imshift(self, img, ddx, ddy, interpolation=cv2.INTER_CUBIC):
+    def _imshift(self, img, ddx, ddy, interpolation=cv2.INTER_CUBIC):
         """
         Recentre an image using an affine transformation.
 
@@ -509,7 +508,7 @@ class PSF():
 
         return recentred
     
-    def centre(self, star_catalogue, cutouts, config = None, interpolation=cv2.INTER_CUBIC):
+    def _centre(self, star_catalogue, cutouts, config = None, interpolation=cv2.INTER_CUBIC):
         """
         Recentre cutouts and measure contamination.
 
@@ -553,7 +552,7 @@ class PSF():
             x0, y0 = centroid_com(co_window)
 
             # Recentre the cutout.
-            cutout = self.imshift(cutout, (cw-x0), (cw-y0), interpolation=interpolation)
+            cutout = self._imshift(cutout, (cw-x0), (cw-y0), interpolation=interpolation)
 
             # Now measure COM on recentered cutout.
             co_window = Cutout2D(cutout, (c0,c0), window, mode='partial', fill_value=0).data
@@ -582,7 +581,7 @@ class PSF():
     
         return star_catalogue, cutouts
     
-    def measure(self, star_catalogue, cutouts, config=None):
+    def _measure(self, star_catalogue, cutouts, config=None):
         """
         Measure the photometric properties of stellar sources.
 
@@ -660,7 +659,7 @@ class PSF():
 
         return star_catalogue, cutouts
     
-    def select(self, star_catalogue, snr_lim=800, dshift_lim=3, mask_lim=0.40,
+    def _select(self, star_catalogue, snr_lim=800, dshift_lim=3, mask_lim=0.40,
                phot_frac_mask_lim=0.85):
         """
         Select objects satisfying given conditions from the catalogue.
@@ -704,7 +703,7 @@ class PSF():
 
         return star_catalogue
     
-    def stack(self, star_catalogue, masked_cutouts, cutouts, config=None, save_figs=True,
+    def _stack(self, star_catalogue, masked_cutouts, cutouts, config=None, save_figs=True,
               science_filename='science_filename', outdir ='./'):
         """
         Stack individual PSFs based on a pixelwise sigma clipped mean.
@@ -790,7 +789,7 @@ class PSF():
             title = ['{}: Mask - {:.1f}%'.format(ii, 100*frac) for ii, frac in 
                      zip(star_catalogue['id'][i_accept], star_catalogue['frac_mask'][i_accept])]
             
-            fig, ax = self.imshow(masked_cutouts[i_accept], title = title, nsig = 30)
+            fig, ax = self._imshow(masked_cutouts[i_accept], title = title, nsig = 30)
 
             outname = os.path.basename(science_filename.replace(".fits", "_masked_cutouts.pdf"))
             fig.savefig(f'{outdir}/{outname}')
@@ -863,7 +862,7 @@ class PSF():
             err = fits.getdata(error_filename)
 
             # Get information and cutouts of stars in the image.
-            stars, cutouts = self.find_stars(sci, err, config, save_figs = save_figs,
+            stars, cutouts = self._find_stars(sci, err, config, save_figs = save_figs,
                                              science_filename = science_filename, outdir = outdir)
 
             # Generate new cutouts at the full PSF size.
@@ -872,16 +871,16 @@ class PSF():
             psfs_masked = np.ma.array(psfs, mask = ~np.isfinite(psfs) | (psfs == 0))
 
             # Move stars to the centre of the cutouts.
-            stars, psfs_masked = self.centre(stars, psfs_masked, config)
+            stars, psfs_masked = self._centre(stars, psfs_masked, config)
 
             # Measure their flux and SNR.
-            stars, psfs_masked = self.measure(stars, psfs_masked, config)
+            stars, psfs_masked = self._measure(stars, psfs_masked, config)
 
             # Select objects with acceptable shift and SNR.
-            stars = self.select(stars, config["SNR_LIM"], config["DSHIFT_LIM"], 0.99, 0.99)
+            stars = self._select(stars, config["SNR_LIM"], config["DSHIFT_LIM"], 0.99, 0.99)
 
             # Stack the cutouts to create a single PSF.
-            stars, psfs_masked, psf_average = self.stack( stars, psfs_masked, psfs, config,
+            stars, psfs_masked, psf_average = self._stack( stars, psfs_masked, psfs, config,
                                                          save_figs, science_filename, outdir)
 
             # Normalise the PSF and remove mask.
@@ -953,7 +952,7 @@ class PSF():
             if band in bands:
 
                 # Measure the COG
-                radii, cog, profile = self.measure_curve_of_growth(psf, radii, norm = False)
+                radii, cog, profile = self._measure_curve_of_growth(psf, radii, norm = False)
 
                 ax.plot(radii, cog, label = band, alpha = 0.8)
 

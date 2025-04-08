@@ -28,13 +28,13 @@ iterskyloc: FALSE    # Should the last segment dilation be used to estimate a lo
 
 doclip: TRUE    # Should the unmasked non-object pixels used to estimate to local sky value be further sigma-clipped?
 shiftloc: FALSE    # Should the cutout centre for the sky shift from "loc" if the desired box size extends beyond the edge of the image?
-paddim: TRUE    # Should the cutout be padded with image data until it meets the desired box size?
+paddim: FALSE    # Should the cutout be padded with image data until it meets the desired box size?
 
 rem_mask: TRUE    # Should masked regions be set to NA in sky and skyRMS maps.
 
 # Extraction
 #-----------
-magzero: [28.08, 28.08]    # AB-zeropoint of the detection and measurement images.
+magzero: 28.08    # AB-zeropoint of the detection and measurement images.
 gain: NULL    # The gain of the detection and measurement images.
 
 segim: NULL    # Path to pre-computed segmentation map. If NULL, compute internally.
@@ -91,19 +91,20 @@ convmode: extended    # How to convolve the sources. (extended, psf)
 
 # Outputs
 #--------
-flux_conversion: !!float 1e9    # Multiplicative conversion from Jy to desired flux unit.
+fluxtype: Jansky    # The flux type to generate. If 'Jansky' or 'microjansky' magzero must be AB.
+flux_conversion: !!float 1e9    # Multiplicative conversion from flux type to desired flux unit.
 
-stats: TRUE    # Should statistics on the segmented objects be returned.
-rotstats: FALSE    # If TRUE then the "asymm", "flux_reflect" and "mag_reflect" are computed.
+stats:  TRUE    # Should statistics on the segmented objects be returned.
+rotstats: TRUE    # If TRUE then the "asymm", "flux_reflect" and "mag_reflect" are computed.
 
-boundstats: FALSE    # If TRUE then various pixel boundary statistics are computed.
+boundstats: FALSE   # If TRUE then various pixel boundary statistics are computed.
 nearstats: FALSE    # If TRUE then the IDs of nearby segments are calculated.
 groupstats: FALSE    # If TRUE then the IDs of grouped dilated segments are calculated.
 offset: 1    # The distance to offset when searching for nearby segments. [pixels]
 
-haralickstats: FALSE    # If TRUE then the Haralick texture statistics are computed.
+haralickstats: TRUE    # If TRUE then the Haralick texture statistics are computed.
 
-keepsegims: FALSE
+keepsegims: TRUE
 
 lowmemory: FALSE    # If TRUE then a low memory mode of ProFound will be used.
 

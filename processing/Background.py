@@ -46,7 +46,7 @@ class Background():
                 content.append(entry)
             self.config = content[0]
     
-    def replace_masked(self, sci, mask):
+    def _replace_mask(self, sci, mask):
         """
         Replace masked regions of an image with a mean background 
         estimate.
@@ -76,7 +76,7 @@ class Background():
 
         return sci_filled
 
-    def clipped_ring_median_filter(self, sci, mask, config):
+    def _clipped_ring_median_filter(self, sci, mask, config):
         """
         Remove ring median filtered signal from an image.
             
@@ -117,7 +117,7 @@ class Background():
         print(f'{config["RING_RADIUS_IN"]}, {config["RING_WIDTH"]}')
 
         # Replace masked pixels with a mean background estimate.
-        sci_filled = self.replace_masked(sci, mask | ceiling_mask)
+        sci_filled = self._replace_mask(sci, mask | ceiling_mask)
 
         # Median filter using a 2D ring kernel.
         ring = Ring2DKernel(config["RING_RADIUS_IN"], config["RING_WIDTH"])
@@ -129,7 +129,7 @@ class Background():
 
         return rmf_image
     
-    def tier_mask(self, img, mask, scaling, config, tiernum=0):
+    def _tier_mask(self, img, mask, scaling, config, tiernum=0):
         """
         Update a source mask using parameters dependent on the tier of 
         masking.
@@ -190,9 +190,9 @@ class Background():
 
         return mask
 
-    def mask_sources(self, img, bitmask, scaling, config, starting_bit=1): 
+    def _mask_sources(self, img, bitmask, scaling, config, starting_bit=1): 
         """
-        Iteratively mask sources using self.tier_mask.
+        Iteratively mask sources using self._tier_mask.
 
         Arguments
         ----------
@@ -215,11 +215,11 @@ class Background():
 
         # Iterate over the tiers and combine masks.
         for tiernum in range(len(config["TIER_NSIGMA"])):
-                mask = self.tier_mask(img, (bitmask != 0), scaling, config, tiernum = tiernum)
+                mask = self._tier_mask(img, (bitmask != 0), scaling, config, tiernum = tiernum)
                 bitmask = np.bitwise_or(bitmask, np.left_shift(mask, tiernum + starting_bit))  
         return bitmask
     
-    def estimate_background(self, img, mask, config):
+    def _estimate_background(self, img, mask, config):
         """
         Estimate an image background using 'zoom' interpolation.
         
@@ -246,7 +246,7 @@ class Background():
                     interpolator = BkgZoomInterpolator())
         return bkg
     
-    def estimate_background_IDW(self, img, mask, config):
+    def _estimate_background_IDW(self, img, mask, config):
         """
         Estimate an image background using 'IDW' interpolation.
         
@@ -273,7 +273,7 @@ class Background():
                     interpolator = BkgIDWInterpolator())
         return bkg
 
-    def evaluate_bias(self, bkgd, err, mask):
+    def _evaluate_bias(self, bkgd, err, mask):
         """Evaluate the bias between masked and unmasked pixels.
         
         Arguments
@@ -417,17 +417,17 @@ class Background():
                 scaling[above_thresh] = 1 + (ratio_capped - 1) * (config['SCALE_MAX'] - 1) / (percentile - 1)
 
             # Ring-median filter the image.
-            filtered = self.clipped_ring_median_filter(sci, mask, config)
+            filtered = self._clipped_ring_median_filter(sci, mask, config)
             
             # Mask sources iteratively in tiers
-            bitmask = self.mask_sources(filtered, bitmask, scaling, config, starting_bit = 1)
+            bitmask = self._mask_sources(filtered, bitmask, scaling, config, starting_bit = 1)
             mask = (bitmask != 0) 
 
             # Estimate the background using just unmasked regions
             if config["INTERPOLATOR"] == 'IDW':
-                bkg = self.estimate_background_IDW(sci, mask, config)
+                bkg = self._estimate_background_IDW(sci, mask, config)
             else:
-                bkg = self.estimate_background(sci, mask, config)
+                bkg = self._estimate_background(sci, mask, config)
             bkgd = bkg.background
 
             # Subtract the background
@@ -437,7 +437,7 @@ class Background():
 
             # Evaluate the bias under all sources.
             print("Bias under bright sources:")
-            bias, sig = self.evaluate_bias(bkgd, err, mask)
+            bias, sig = self._evaluate_bias(bkgd, err, mask)
             hdr[f'BIAS_B'] = (bias, 'Bias under all sources.')
             hdr[f'SIG_B'] = (sig, 'Significance of bias under all sources.')
 
@@ -447,7 +447,7 @@ class Background():
             faintmask = np.zeros(sci.shape, bool)
             for t in (3, 4):
                 faintmask = faintmask | (np.bitwise_and(bitmask,2**t) != 0)
-            bias, sig = self.evaluate_bias(bkgd, err, faintmask)
+            bias, sig = self._evaluate_bias(bkgd, err, faintmask)
             hdr[f'BIAS_F'] = (bias, 'Bias under faint sources.')
             hdr[f'SIG_F'] = (sig, 'Significance of bias under faint sources.')
 
@@ -591,9 +591,9 @@ class Background():
             wcs = WCS(hdr)
 
             if config["INTERPOLATOR"] == 'IDW':
-                bkg = self.estimate_background_IDW(sci, mask, config)
+                bkg = self._estimate_background_IDW(sci, mask, config)
             else:
-                bkg = self.estimate_background(sci, mask, config)
+                bkg = self._estimate_background(sci, mask, config)
             bkgsub = sci - bkg.background
             bkgsub = np.choose(bordermask, (bkgsub, 0.))
 
