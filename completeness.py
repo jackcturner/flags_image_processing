@@ -15,8 +15,6 @@ import scipy.ndimage as nd
 from utils import create_edge_mask, poisson_confidence_interval
 from extraction import SExtractor
 
-import webbpsf
-
 def find_matches(small_cat, large_cat):
     """
     Return indicies into a larger catalogue from X-Y matches to a smaller
@@ -51,53 +49,55 @@ def find_matches(small_cat, large_cat):
     # Return the matched indices and distances.
     return indices, distances
 
-def measure_completeness(
-          sci_name, wht_name, bins, config_name, psf_name=None, filter=None, seg_name=None,
-          dilate=0, border_width=50, sex_path='sex', min_sources=1500, density=5,
-          max_distance=6.66, max_flux=1.5, min_flux=0.5, min_sn=2, conversion=1/21.15, 
-          pixel_scale=0.03):
+def measure_completeness(science, weight, psf, bins, config, parameters={}, sex_path='sex', 
+                         mask=None, conversion=1/21.15, dilate=0, border=50, min_sources=1500, 
+                         density=5, offset=6.66, flux_limits=[0.5, 1.5], min_sn=2, pixel_scale=0.03, 
+                         outdir='./'):
     """
     Measure the completeness of an image by inserting synthetic sources
-    in a range of magnitude bins.
+    in provided magnitude bins. 
 
     Arguments
     ---------
-    sci_name (str)
-        Path to the fits science image for which to measure completeness.
+    science (str)
+        Path to fits image from which to measure completeness.
     wht_name (str)
-        Path the corresponding fits weight map.
+        Path to the fits image to use for weighting.
+    psf (str)
+        Path to the fits PSF image to insert as a synthetic source.
     bins (numpy.ndarray)
-        1D array defining the magnitude bin edges.
-    config_name (str)
-        Path to the Sextractor configuration file to use.
-    psf_name (str/ None)
-        If str, path to fits PSF image to use as synthetic source.
-        If None, use WebbPSF to genrate the source.
-    filter (str, None)
-        If psf_name = None, the PSF to generate with WebbPSF.
-    seg_name (str, None)
-        If str, path to Sextractor segmentation map to use as source
-        mask. If None, generate using provided parameters.
+        1D array defining the AB-magnitude bin edges.
+    config (str)
+        Path to the Source Extractor configuration file to use.
+    parameters (dict)
+        Key-value pairs to overwrite the configuration file.
+    sex_path (str)
+        Path to the source extractor executable.
+    mask (str/None)
+        Path to fits source mask. If None, compute with SE.
+    conversion (float)
+        Multiplicative factor to convert nJy to image units.
     dilate (int)
-        The number of segmentation map dilation iterations.
+        The number of source mask dilation iterations.
     border_width (int)
         Width of edge mask to generate.
-    sex_path (str)
-        Path to Sextractor executable.
     min_sources (int)
         The minimum number of sources to generate.
     density (int)
         The number of sources per arcmin that can be inserted.
-    max_distance (float)
-        The maximum acceptable distance in pixels for a match.
-    max_flux (float)
-        The maximum accepted flux ratio for a match.
-    min_flux (float)
-        The minimum accepted flux ratio for a match.
+    offset (float)
+        The maximum offset in pixels allowed between the inserted and
+        recovered source.
+    flux_limits (List[float])
+        The minimum and maximum flux ratio of recovered and inserted 
+        sources.
     min_sn (float)
-        The minimum accepted S/N for a match.
-    conversion (float)
-        Multiplicative factor for converting nJy to image units.
+        The minimum S/N of recovered sources.
+    pixel_scale (float)
+        The pixel scale in arcseconds. Only used if PIXAR_A2 not found
+        in the header.
+    outdir (str)
+        Directory in which to save temporary files.
 
     Returns
     -------
@@ -107,35 +107,35 @@ def measure_completeness(
         The 1-sigma upper and lower confidence limits.
     """
     
-    print(f'Measuring completeness in {os.path.basename(sci_name)}...')
+    sci_name = os.path.basename(science).removesuffix('fits')
+    print(f'Measuring completeness in {sci_name}...')
 
     # Convert the bin magnitudes to nJy.
     bins = np.array([(10**((m-8.90)/-2.5))*1e9 for m in bins])
-    # Store the centres and edges of each bin.
     bins_info = np.column_stack(((bins[:-1] + bins[1:]) / 2, bins[:-1], bins[1:]))
 
     # Initalise the SExtractor class.
-    se_run = SExtractor(config_name, sex_path)
+    se_run = SExtractor(config, sex_path)
 
     # Create an edge mask to remove noisy regions.
-    edges = create_edge_mask(sci_name, n_pixels=border_width)
-    os.remove('combined_edge_mask.fits')
+    edges = create_edge_mask(science, n_pixels=border)
 
     # If no mask provided, generate a segmentation map.
     delete = False
-    if seg_name == None:
+    if mask == None:
         print('Generating source mask...')
-        cat = se_run.SExtract(sci_name, wht_name, parameters = {'CHECKIMAGE_TYPE':'SEGMENTATION',
-                                                            'CHECKIMAGE_NAME':'./completeness_mask.fits'})
-        seg_name = './completeness_mask.fits'
+        mask = f'{outdir}/{sci_name}_completeness_mask.fits'
+        parameters['CHECKIMAGE_TYPE'] = 'SEGMENTATION'
+        parameters['CHECKIMAGE_NAME'] = mask
+        cat = se_run.extract(science, weight, parameters, outdir=outdir)
         os.remove(cat)
         delete = True
 
     # Get a list of pixels that are on the detector and unmasked.
     unmasked = (edges == 0)
-    with fits.open(wht_name) as wht:
-            unmasked = unmasked & (wht[0].data != 0)
-    with fits.open(seg_name) as seg:
+    with fits.open(weight) as wht:
+            unmasked = unmasked & (wht[0].data > 0) & (~np.isnan(wht[0].data))
+    with fits.open(mask) as seg:
             seg_mask = (seg[0].data != 0)
             if dilate > 0:
                 seg_mask = nd.binary_dilation(seg_mask, iterations=dilate)
@@ -146,25 +146,14 @@ def measure_completeness(
     unmasked_coordinates = list(zip(unmasked_pixels[0], unmasked_pixels[1]))
 
     # Get the total unmasked area in arcmin.
-    hdr = fits.getheader(sci_name)
+    hdr = fits.getheader(science)
     try:
         total_area = np.sum(unmasked)*(hdr['PIXAR_A2']/3600)
     except:
         total_area = np.sum(unmasked)*((pixel_scale**2)/3600)
 
-    # If no PSF provided, generate using WebbPSF.
-    if psf_name == None:
-        print('Using WebbPSF generated PSF.')
-        nc = webbpsf.NIRCam()
-        nc.pixelscale = np.sqrt(hdr['PIXAR_A2'])
-        nc.filter = filter
-        psf = nc.calc_psf()
-        psf = psf[3].data
-        del nc
-    else:
-        psf = fits.getdata(psf_name)
-
-    # Ensure the PSF is normalised.
+    # Load an normalise the psf
+    psf = fits.getdata(psf)
     psf /= np.sum(psf)
 
     # Number of sources that can be placed in each image.
@@ -174,7 +163,13 @@ def measure_completeness(
     # The total number of sources to be placed.
     total_sources = n_sources*n_img_max
 
-    print(f"Placing {n_sources} synthetic sources in {n_img_max} mosaics, totalling {total_sources}.")
+    print(f'Placing {n_sources} synthetic sources in {n_img_max} mosaics, ' 
+          f'totalling {total_sources}.')
+
+    # Before running SE fix some parameters.
+    parameters['CHECKIMAGE_TYPE'] = 'NONE'
+    parameters['EMPIRICAL'] = False
+    parameters['TO_FLUX'] = 1/conversion
 
     # Store the completeness here.
     complete = []
@@ -183,7 +178,7 @@ def measure_completeness(
     # For each bin.
     for bin in bins_info:
 
-        print(f"Working on bin with central flux {round(bin[0])} nJy...")
+        print(f'Working on bin with central flux {round(bin[0])} nJy...')
 
         # Keep track of the number of recovered sources.
         n_recovered = 0
@@ -196,17 +191,11 @@ def measure_completeness(
             source_table = Table(names = ['INDEX', 'X_IMAGE', 'Y_IMAGE', 'FLUX'])
 
             # Open a new mosaic.
-            img = fits.getdata(sci_name)
+            img = fits.getdata(science)
 
             # Get the random locations of the sources.
-
-            # Select unique random entries using random.sample
             indices = random.sample(range(len(unmasked_coordinates)), n_sources)
-
-            # Get the corresponding locations
             locations = [unmasked_coordinates[i] for i in indices]
-
-            #locations = unmasked_coordinates[np.random.choice(len(unmasked_coordinates), n_sources, replace=False)]
 
             # For each source.
             for i, location in enumerate(locations):
@@ -216,13 +205,15 @@ def measure_completeness(
                 flux_psf = uniform(bin[1], bin[2])
                 psf_ = psf * flux_psf * conversion
 
-                # Calculate the bounding box for the source image within the mosaic.
+                # Calculate the bounding box for the source image within 
+                # the mosaic.
                 x_start = location[0] - psf_.shape[0]//2  
                 x_end = x_start + psf_.shape[0]
                 y_start = location[1] - psf_.shape[1]//2
                 y_end = y_start + psf_.shape[1]  
 
-                # Ensure the bounding box is within the bounds of the mosaic.
+                # Ensure the bounding box is within the bounds of 
+                # the mosaic.
                 x_start = max(x_start, 0)
                 x_end = min(x_end, img.shape[0])
                 y_start = max(y_start, 0)
@@ -235,10 +226,11 @@ def measure_completeness(
                 source_table.add_row([i, location[1], location[0], flux_psf])
                         
             # Save the image.
-            fits.writeto(f'completeness_{n_img}_{len(locations)}.fits', img, hdr, overwrite = True)
+            img_name = f'{outdir}/{sci_name}_completeness_{n_img}_{len(locations)}.fits'
+            fits.writeto(img_name, img, hdr, overwrite = True)
 
             # Run the SExtraction on this image.
-            cat = se_run.SExtract(f'completeness_{n_img}_{len(locations)}.fits', wht_name, parameters = {'TO_FLUX':1/conversion, 'CHECKIMAGE_TYPE': 'NONE'}, output = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'])
+            cat = se_run.extract(img_name, weight, parameters, output = ['FLUX_AUTO', 'FLUXERR_AUTO', 'X_IMAGE', 'Y_IMAGE'], outdir=outdir)
 
             with h5py.File(cat) as f:
 
@@ -251,7 +243,7 @@ def measure_completeness(
                 indices, distances = find_matches(syn_xy, cat_xy)
 
                 # Apply distance criterion.
-                s = distances < max_distance
+                s = distances < offset
 
                 # Search objects passing this criterion for duplicate matches.
                 unique_indices, unique_pos = np.unique(indices, return_inverse=True)
@@ -266,13 +258,15 @@ def measure_completeness(
                         for j in range(len(duplicate_indices)):
                             if j != min_dist_idx:
                                 duplicate_mask[duplicate_indices[j]] = True
+
                 # Otherwise the criterion is failed.
                 s[duplicate_mask] = False
 
-                print(f"Number of matches within distance threshold: {sum(s)}")
+                print(f'Number of matches within distance threshold: {sum(s)}')
 
                 # Apply the distance criterion to indices
                 filtered_indices = indices[s]
+
                 # and sort them.
                 sorted_order = np.argsort(filtered_indices)
                 sorted_indices = filtered_indices[sorted_order]
@@ -287,7 +281,8 @@ def measure_completeness(
                 true_flux = true_flux[sorted_order]
 
                 # Apply flux criteria.
-                s_ = (flux / true_flux < max_flux) & (flux / true_flux > min_flux) & (sn > min_sn)
+                s_ = ((flux / true_flux < flux_limits[1]) & (flux / true_flux > flux_limits[0]) & 
+                      (sn > min_sn))
                 print(f"Number of sources matching flux criteria: {sum(s_)}")
 
             # Record the number of recovered objects.
@@ -295,15 +290,15 @@ def measure_completeness(
 
             # Remove files for this image.
             os.remove(cat)
-            os.remove(f'completeness_{n_img}_{len(locations)}.fits')
+            os.remove(img_name)
 
             n_img += 1
 
         complete.append(n_recovered/total_sources)
         error.append(poisson_confidence_interval([n_recovered])/total_sources)
 
-    # If segmentation map was generated, remove it.
+    # If source mask was generated, remove it.
     if delete == True:
-        os.remove(seg_name)
+        os.remove(mask)
 
     return complete, error

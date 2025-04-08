@@ -4,6 +4,7 @@ import h5py
 import numpy as np
 from numpy.random import uniform
 import matplotlib.pyplot as plt
+import yaml
 import random
 import math
 
@@ -12,6 +13,8 @@ from astropy.table import Table
 from astropy.wcs import WCS
 import astropy.units as u
 from astropy.coordinates import SkyCoord
+from astropy.nddata import reshape_as_blocks
+from astropy.stats import SigmaClip
 from regions import Regions
 
 import scipy.ndimage as nd
@@ -21,6 +24,7 @@ from scipy.spatial import cKDTree
 
 from photutils.centroids import centroid_com
 from photutils.aperture import CircularAperture, aperture_photometry
+import photutils.background as pb
 
 from skimage.measure import block_reduce
 
@@ -497,8 +501,6 @@ def measure_curve_of_growth(image, radii, position=None, norm=True, show=False):
         The value of the profile at each radius.
     """
 
-    image = fits.getdata(image)
-
     # Calculate the centroid of the source.
     if type(position) == type(None):
         position = centroid_com(image)
@@ -726,8 +728,7 @@ def regions_to_mask(image, regions, outname = None):
 
     return
 
-def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels=50,
-                     outname='combined_edge_mask.fits'):
+def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels=50, outname=None):
     """
     Use binaray hole filling and sobel filters to identify and mask
     image edges and merge multiple mask into a single combined mask.
@@ -809,8 +810,9 @@ def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels
         combined_mask = masks[0]
     combined_mask = combined_mask.astype(np.uint8)
 
-    hdr = fits.getheader(images[0])
-    fits.writeto(outname, combined_mask.astype(np.float32), hdr, overwrite = True)
+    if outname != None:
+        hdr = fits.getheader(images[0])
+        fits.writeto(outname, combined_mask.astype(np.float32), hdr, overwrite = True)
 
     return combined_mask
 
@@ -850,9 +852,12 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
 
             flag = []
 
-            # If the centre of an object is within the edge region, flag it.
+            # If the centre of an object is within the edge region, 
+            # flag it.
             for x, y in zip(xcen, ycen):
-                if mask[int(y), int(x)] == True:
+                if np.isfinite(x) == False or np.isfinite(y) == False:
+                    flag.append(1)
+                elif mask[int(y), int(x)] == True:
                     flag.append(1)
                 else:
                     flag.append(0)
@@ -864,7 +869,7 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
 
     return
 
-def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
+def correct_extinction(catalogue, replace = False, suffix = '_EXT', ra_key='ALPHA_SKY', dec_key='DELTA_SKY'):
     """
     Query the NED extinction calculator using mean RA and DEC location
     and apply correction to FLAGS catalogue.
@@ -896,6 +901,8 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
     # Read the catalogue.
     with h5py.File(catalogue, 'r+') as f:
 
+        print(f'Correcting {catalogue} for extinction.')
+
         # Get list of instruments.
         instruments = list(f['photometry'].keys())
         # Remove the detection image.
@@ -914,8 +921,8 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
         for filter in filters:
 
             # Get the mean RA and DEC.
-            ra = str(np.mean(f[f'photometry/{filter}/ALPHA_SKY'][:]))
-            dec = str(np.mean(f[f'photometry/{filter}/DELTA_SKY'][:]))
+            ra = str(np.mean(f[f'photometry/{filter}/{ra_key}'][:]))
+            dec = str(np.mean(f[f'photometry/{filter}/{dec_key}'][:]))
 
             # Determine the closest matching filter.
             corr_filt = translate[filter]
@@ -928,6 +935,8 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
             for key in keys:
 
                 if ('FLUX' in key) & ('ERR' not in key):
+
+                    print(f'Working on {key}...')
 
                     # Get the flux in nJy.
                     flux = f[f'photometry/{filter}/{key}'][:]
@@ -944,8 +953,11 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
 
                     # Add to the catalogue.
                     if replace == True:
+                        del f[f'photometry/{filter}/{key}']
                         f[f'photometry/{filter}/{key}'] = flux_corr_
                     else:
+                        if f'{key}{suffix}' in f[f'photometry/{filter}'].keys():
+                            del f[f'photometry/{filter}/{key}{suffix}']
                         f[f'photometry/{filter}/{key}{suffix}'] = flux_corr_
 
                     # If error is provided, correct by maintaining
@@ -961,13 +973,14 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT'):
 
                         # Scale error to maintain this.
                         err_corr = np.where(flux <= 0, err, flux_corr/s_n)
-                        print(err_corr)
-                        print(flux_corr_/err_corr)
 
                         # Add to the catalogue.
                         if replace == True:
+                            del f[f'photometry/{filter}/{err_name}']
                             f[f'photometry/{filter}/{err_name}'] = err_corr
                         else:
+                            if f'{err_name}{suffix}' in f[f'photometry/{filter}'].keys():
+                                del f[f'photometry/{filter}/{err_name}{suffix}']
                             f[f'photometry/{filter}/{err_name}{suffix}'] = err_corr
                 
 
@@ -1035,3 +1048,118 @@ def clean_regions(region_file, overwrite=False, outname=None):
             f.writelines(filtered_lines)
 
     return
+
+def scale_weights(science, config, variance=None, weight=None):
+    """
+    Scale relative varaince or weight map to absolute using image RMS.
+    
+    Arguments
+    ---------
+    science (str)
+        Path to the science image to use for RMS calculation.
+    config (str)
+        Path to photutils configuration file.
+    variance (str/None)
+        Path to relative variance image. If None, weight must be given.
+    weight (str/None)
+        Path to relative weight image. If None, variance must be given.
+
+    Returns
+    -------
+    err (numpy.ndarray)
+        2D array of absolute image RMS.
+    """
+        
+    sci = fits.getdata(science)
+
+    # Get relative variance or calculate from weights.
+    if (variance == None) & (weight == None):
+        raise KeyError('Must provide either a weight or variance image.')
+    elif variance == None:
+        var = fits.getdata(weight)
+        var = 1/var
+    else:
+        var = fits.getdata(weight)
+
+    # Load the config file.
+    with open(config, 'r') as file:
+        yml = yaml.safe_load_all(file)
+        content = []
+        for entry in yml:
+            content.append(entry)
+        config = content[0]
+
+    # Expand any environment variables and convert string to None.
+    for key, value in config.items():
+        if type(value) == str:
+            config[key] = os.path.expandvars(value)
+        if value == 'None':
+            config[key] = None
+
+    # The interpolation, background and RMS estimators.
+    interpolators = {'IDW':pb.BkgIDWInterpolator(), 'Zoom':pb.BkgZoomInterpolator()}
+    back_est = {'Mean':pb.MeanBackground(), 'Median':pb.MedianBackground(), 
+                'Mode':pb.ModeEstimatorBackground(),'MMM':pb.MMMBackground(),
+                'SExtractor':pb.SExtractorBackground(),
+                'BiweightLocation':pb.BiweightLocationBackground()}
+    rms_est = {'Std':pb.StdBackgroundRMS(), 'MADStd':pb.MADStdBackgroundRMS(), 
+                'BiweightScale':pb.BiweightScaleBackgroundRMS()}
+    
+    # Mask off detector regions.
+    coverage_mask = (var == 0) + (np.isnan(var) == True) + (~np.isfinite(var))
+
+    # Mask sources if provided.
+    if config['SOURCE_MASK'] != None:
+        mask = fits.getdata(config['SOURCE_MASK'])
+        mask = mask > 0
+    else:
+        mask = None
+
+    # Get the sigma clipping object.
+    if config['SIGMA_CLIP'] == True:
+        sigma_clip = SigmaClip(
+            sigma_lower=config['SIGMA'][0], sigma_upper=config['SIGMA'][1], 
+            maxiters=config['MAX_ITERS'])
+    else:
+        sigma_clip = None
+
+    # Get the interpolation, background and RMS estimators.
+    bkg_estimator = back_est.get(config['BACK_ESTIMATOR'])
+    bkgrms_estimator = rms_est.get(config['RMS_ESTIMATOR'])
+    interpolator = interpolators.get(config['INTERPOLATOR'])
+
+    # Calculate the 2D background.
+    print('Measuring the 2D sky background...')
+    bkg = pb.Background2D(
+        sci, box_size=config['BOX_SIZE'], mask=mask, coverage_mask=coverage_mask, fill_value=0,
+        exclude_percentile=config['EXCLUDE_PERCENTILE'], filter_size=config['FILTER_SIZE'],
+        filter_threshold=config['FILTER_THRESH'], edge_method=config['EDGE_METHOD'], 
+        sigma_clip=sigma_clip, bkg_estimator=bkg_estimator, bkgrms_estimator=bkgrms_estimator,
+        interpolator=interpolator)
+
+    # If an integer number of boxes do not fit in the image, the
+    # last boxes will be ignored.
+    nboxes_y = var.shape[0] // config['BOX_SIZE'][0]
+    nboxes_x = var.shape[1] // config['BOX_SIZE'][1]
+
+    y1 = nboxes_y * config['BOX_SIZE'][0]
+    x1 = nboxes_x * config['BOX_SIZE'][1]
+
+    # Get the variance and background RMS images as boxes.
+    core = reshape_as_blocks(var[:y1, :x1].copy(), config['BOX_SIZE'])
+    internal_rms = reshape_as_blocks(bkg.background_rms[:y1, :x1].copy(), config['BOX_SIZE'])
+
+    # Compute the modal variance within each box.
+    mode_, _ = st.mode(core, axis=(2, 3), keepdims=False)
+    # And the deviation of the RMS.
+    std = np.std(internal_rms, axis=(2,3), keepdims=False)
+
+    # Compute the scaling factor.
+    s = (mode_ > 0) & (std > 0)
+    ratio = std[s]/mode_[s]
+    factor = np.median(ratio)
+
+    # Get the final RMS map used for thresholding.
+    err = np.sqrt(var * factor)
+
+    return err
