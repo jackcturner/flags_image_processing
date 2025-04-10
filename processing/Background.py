@@ -273,7 +273,7 @@ class Background():
                     interpolator = BkgIDWInterpolator())
         return bkg
 
-    def _evaluate_bias(self, bkgd, err, mask):
+    def _evaluate_bias(self, bkgd, detector_mask, mask):
         """Evaluate the bias between masked and unmasked pixels.
         
         Arguments
@@ -294,8 +294,7 @@ class Background():
             The significance of the difference in mean values.
         """
 
-        # True if on detector, False if not.
-        on_detector = np.logical_not(np.isnan(err))
+        on_detector = np.logical_not(detector_mask)
     
         # Mean and deviation of background under masked pixels.
         mean_masked = bkgd[mask & on_detector].mean()
@@ -318,7 +317,7 @@ class Background():
 
         return diff, significance
 
-    def individual_background(self, science_images, error_images, weight_images, parameters={}, suffix='bkgsub',
+    def individual_background(self, science_images, weight_images, parameters={}, suffix='bkgsub',
                               replace_sci=False, store_mask=True):
         """
         Perform individual background subtraction with tiered source masking.
@@ -352,13 +351,11 @@ class Background():
         # If individual images are given convert to lists.
         if type(science_images) == str:
             science_images = [science_images]
-        if type(error_images) == str:
-            error_images = [error_images]
         if type(weight_images) == str:
             weight_images = [weight_images]
 
         # Raise an error if the lists are not of the same length.
-        if (len(science_images) != len(error_images)) or (len(error_images) != len(weight_images)):
+        if len(science_images) != len(weight_images):
             raise KeyError('There should be corresponding images of each type.')
         
         # Overwrite some parameters just for this run.
@@ -373,28 +370,26 @@ class Background():
         # Store the filenames of the background subtracted images for
         # later.
         bkgsub_filenames = []
-        for sci_filename, err_filename, wht_filename in zip(science_images, error_images, weight_images):
+        for sci_filename, wht_filename in zip(science_images, weight_images):
 
             print(f'Measuring background of {sci_filename}...')
 
             # Load in the images and header.
             sci, hdr = fits.getdata(sci_filename, header = True)            
-            err = fits.getdata(err_filename)
             wht = fits.getdata(wht_filename)
 
             # Set up a bitmask
             bitmask = np.zeros(sci.shape,np.uint32) # Enough for 32 tiers
 
             # First level is for masking pixels off the detector
-            off_detector_mask = np.isnan(err)
+            off_detector_mask = np.isnan(wht) | (wht <= 0) | np.isnan(sci)
             mask = off_detector_mask 
-            bitmask = np.bitwise_or(bitmask, np.left_shift(mask,0))
+            bitmask = np.bitwise_or(bitmask, np.left_shift(mask, 0))
 
             # Scale the detection threshold for low weight regions.
 
             # First calculate the median weight
-            wht_mask = wht != 0
-            med_wht = np.median(wht[wht_mask])
+            med_wht = np.median(wht[~off_detector_mask])
 
             # Find the ratio of median weight to weight of each pixel.
             ratio = np.where(wht == 0, np.nan, med_wht/wht)
@@ -414,44 +409,44 @@ class Background():
                 ratio_capped = np.minimum(ratio[above_thresh], percentile)
 
                 # Calculate the scaling.                                                                                                                                                                                                    
-                scaling[above_thresh] = 1 + (ratio_capped - 1) * (config['SCALE_MAX'] - 1) / (percentile - 1)
+                scaling[above_thresh] = (1 + (ratio_capped - 1) * (config['SCALE_MAX'] - 1) / 
+                                         (percentile - 1))
 
             # Ring-median filter the image.
             filtered = self._clipped_ring_median_filter(sci, mask, config)
             
             # Mask sources iteratively in tiers
             bitmask = self._mask_sources(filtered, bitmask, scaling, config, starting_bit = 1)
-            mask = (bitmask != 0) 
+            source_mask = (bitmask != 0) 
 
             # Estimate the background using just unmasked regions
             if config["INTERPOLATOR"] == 'IDW':
-                bkg = self._estimate_background_IDW(sci, mask, config)
+                bkg = self._estimate_background_IDW(sci, source_mask, config)
             else:
-                bkg = self._estimate_background(sci, mask, config)
+                bkg = self._estimate_background(sci, source_mask, config)
             bkgd = bkg.background
 
             # Subtract the background
             bkgd_subtracted = sci - bkgd
-
-            bkgd_subtracted = np.where(np.isnan(err), 0, bkgd_subtracted)
+            bkgd_subtracted = np.where(off_detector_mask, 0, bkgd_subtracted)
 
             # Evaluate the bias under all sources.
             print("Bias under bright sources:")
-            bias, sig = self._evaluate_bias(bkgd, err, mask)
+            bias, sig = self._evaluate_bias(bkgd, off_detector_mask, source_mask)
             hdr[f'BIAS_B'] = (bias, 'Bias under all sources.')
             hdr[f'SIG_B'] = (sig, 'Significance of bias under all sources.')
 
 
-            # And just under fainter sources.
+            # And just under the faintest sources.
             print("\nBias under fainter sources")
             faintmask = np.zeros(sci.shape, bool)
-            for t in (3, 4):
-                faintmask = faintmask | (np.bitwise_and(bitmask,2**t) != 0)
-            bias, sig = self._evaluate_bias(bkgd, err, faintmask)
+            for t in [len(config["TIER_NSIGMA"])-1, len(config["TIER_NSIGMA"])]:
+                faintmask = faintmask | (np.bitwise_and(bitmask, 2**t) != 0)
+
+            bias, sig = self._evaluate_bias(bkgd, off_detector_mask, faintmask)
             hdr[f'BIAS_F'] = (bias, 'Bias under faint sources.')
             hdr[f'SIG_F'] = (sig, 'Significance of bias under faint sources.')
 
-            
             # Overwrite or create new file.
             if replace_sci == True:
                 out_filename = sci_filename
