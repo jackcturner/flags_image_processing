@@ -733,7 +733,7 @@ class SExtractor():
         with np.errstate(invalid='ignore'):
 
             # Will scale errors by this relative value.
-            rel_e = err[cat['Y_IMAGE'].astype(int), cat['X_IMAGE'].astype(int)] / median_err
+            rel_e = err[cat['Y_IMAGE'].astype(int)-1, cat['X_IMAGE'].astype(int)-1] / median_err
 
             # For each flux column, calculate the area based on the type
             # of aperture and extract the noise from the fit.

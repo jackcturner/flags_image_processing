@@ -234,8 +234,11 @@ def generate_error(science, weight, exposure, grow = True, outname = None):
     phot_scale = 1.
 
     for k in ['PHOTMJSR','PHOTSCAL']:
-        print(f'{k} {exp_header[k]:.3f}')
-        phot_scale /= exp_header[k]
+        try:
+            print(f'{k} {exp_header[k]:.3f}')
+            phot_scale /= exp_header[k]
+        except:
+            print(f'{k} not found.')
 
     # Unit and pixel area scale factors.
     if 'OPHOTFNU' in exp_header:
@@ -816,7 +819,7 @@ def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels
 
     return combined_mask
 
-def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_IMAGE'):
+def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_IMAGE', indexing=0):
     """Flag sources with centres within a masked region.
 
     WARNING: Assumes SExtractor coordinates so X -> Y, Y -> X.
@@ -857,7 +860,7 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
             for x, y in zip(xcen, ycen):
                 if np.isfinite(x) == False or np.isfinite(y) == False:
                     flag.append(1)
-                elif mask[int(y), int(x)] == True:
+                elif mask[int(y)-indexing, int(x)-indexing] == True:
                     flag.append(1)
                 else:
                     flag.append(0)
@@ -896,7 +899,8 @@ def correct_extinction(catalogue, replace = False, suffix = '_EXT', ra_key='ALPH
                     'HST/ACS_WFC.F475W': 'ACS F475W','HST/ACS_WFC.F555W': 'ACS F555W','HST/ACS_WFC.F606W': 'ACS	F606W',
                     'HST/ACS_WFC.F625W': 'ACS F625W','HST/ACS_WFC.F775W': 'ACS F775W','HST/ACS_WFC.F814W': 'ACS F814W',
                     'HST/WFC3_IR.F098M': 'LSST y','HST/WFC3_IR.F105W': 'WFC3 F105W','HST/WFC3_IR.F110W': 'WFC3 F110W',
-                    'HST/WFC3_IR.F125W': 'WFC3 F125W','HST/WFC3_IR.F140W': 'WFC3 F140W','HST/WFC3_IR.F160W': 'WFC3 F160W'}
+                    'HST/WFC3_IR.F125W': 'WFC3 F125W','HST/WFC3_IR.F140W': 'WFC3 F140W','HST/WFC3_IR.F160W': 'WFC3 F160W',
+                    'HST/ACS_WFC.F850LP': 'ACS F850LP'}
 
     # Read the catalogue.
     with h5py.File(catalogue, 'r+') as f:
