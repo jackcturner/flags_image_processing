@@ -819,7 +819,7 @@ def create_edge_mask(images, off_image=0, buffer_size=5, threshold=0.1, n_pixels
 
     return combined_mask
 
-def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_IMAGE', indexing=0):
+def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_IMAGE', indexing=1):
     """Flag sources with centres within a masked region.
 
     WARNING: Assumes SExtractor coordinates so X -> Y, Y -> X.
@@ -839,6 +839,9 @@ def flag_mask(catalogue, mask, bands, label='MASK', X_name='X_IMAGE', Y_name='Y_
         Name of the X coordinate dataset.
     Y_name (str)
         Name of the Y coordinate dataset.
+    indexing (int)
+        The type of indexing used. Default is 1 for Source Extractor
+        quantities.
     """
 
     mask = fits.getdata(mask)
